@@ -4,10 +4,12 @@ const axios = require("axios");
 const app = express();
 app.use(express.json());
 
-// 👉 ดึง Token จาก Render
 const LINE_TOKEN = process.env.LINE_TOKEN;
 
-// รับ webhook จาก LINE
+// เก็บโพยชั่วคราว (เวอร์ชันพื้นฐาน)
+let bets = [];
+
+// webhook
 app.post("/webhook", async (req, res) => {
   try {
     const event = req.body.events?.[0];
@@ -15,18 +17,39 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    const userText = event.message.text;
+    const text = event.message.text.trim();
+    let replyText = "❌ คำสั่งไม่ถูกต้อง";
+
+    // แทงถั่ว
+    if (text.startsWith("แทงถั่ว")) {
+      const parts = text.split(" ");
+      if (parts.length === 3) {
+        const side = parts[1]; // ดำ / แดง
+        const amount = parseInt(parts[2]);
+
+        if ((side === "ดำ" || side === "แดง") && amount > 0) {
+          bets.push({
+            userId: event.source.userId,
+            side,
+            amount
+          });
+
+          replyText = `🎲 รับโพยแล้ว\nฝั่ง: ${side}\nเงิน: ${amount}`;
+        }
+      }
+    }
+
+    // เปิดถั่ว
+    if (text === "เปิดถั่ว") {
+      const result = Math.random() < 0.5 ? "ดำ" : "แดง";
+      replyText = `🎲 ผลออก: ${result}\n(กำลังคำนวณผล...)`;
+    }
 
     await axios.post(
       "https://api.line.me/v2/bot/message/reply",
       {
         replyToken: event.replyToken,
-        messages: [
-          {
-            type: "text",
-            text: `บอททำงานแล้ว ✅\nคุณพิมพ์ว่า: ${userText}`
-          }
-        ]
+        messages: [{ type: "text", text: replyText }]
       },
       {
         headers: {
@@ -38,17 +61,15 @@ app.post("/webhook", async (req, res) => {
 
     res.sendStatus(200);
   } catch (err) {
-    console.log(err);
+    console.error(err);
     res.sendStatus(200);
   }
 });
 
-// หน้าเว็บทดสอบ
+// หน้าเช็กเซิร์ฟเวอร์
 app.get("/", (req, res) => {
   res.send("LINE BOT ONLINE");
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("Server running");
-});
+app.listen(PORT, () => console.log("Server running"));
