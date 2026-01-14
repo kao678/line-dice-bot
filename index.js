@@ -1,19 +1,22 @@
-// ================= IMPORT =================
+// ================== IMPORT ==================
 const express = require("express");
 const axios = require("axios");
+
 const app = express();
 app.use(express.json());
 
-// ================= CONFIG =================
+// ================== CONFIG ==================
 const LINE_TOKEN = process.env.LINE_TOKEN;
 const PORT = process.env.PORT || 3000;
 
-// ================= MEMORY DB =================
-const ROOMS = {};        // ห้องทั้งหมด
-const USER_ROOM = {};   // user อยู่ห้องไหน
-const ADMINS = new Set();
+// ================== MEMORY DB ==================
+const ROOMS = {};        // roomId => room data
+const USERS = {};        // userId => { credit, name }
+const ADMINS = new Set(); // admin userId
+let CURRENT_RESULT = null;
+let HISTORY = [];
 
-// ================= LINE REPLY =================
+// ================== LINE REPLY ==================
 async function reply(token, messages) {
   return axios.post(
     "https://api.line.me/v2/bot/message/reply",
@@ -21,183 +24,181 @@ async function reply(token, messages) {
     {
       headers: {
         Authorization: `Bearer ${LINE_TOKEN}`,
-        "Content-Type": "application/json"
-      }
+        "Content-Type": "application/json",
+      },
     }
   );
 }
 
-// ================= FLEX =================
-function flexStatus(title, value, color = "#ff3333") {
+// ================== FLEX : ลูกเต๋า 3 ลูก ==================
+function flexDice(dices, sum) {
   return {
     type: "flex",
-    altText: title,
+    altText: `ผลออก ${sum}`,
     contents: {
       type: "bubble",
-      styles: { body: { backgroundColor: "#111111" } },
+      styles: { body: { backgroundColor: "#1a1a1a" } },
       body: {
         type: "box",
         layout: "vertical",
         contents: [
-          { type: "text", text: title, weight: "bold", color: "#ffffff" },
-          { type: "text", text: value, color, size: "lg" }
-        ]
-      }
-    }
+          {
+            type: "box",
+            layout: "horizontal",
+            spacing: "md",
+            contents: dices.map(n => ({
+              type: "image",
+              url: `https://raw.githubusercontent.com/kao678/dice-img/main/${n}.png`,
+              size: "sm",
+            })),
+          },
+          {
+            type: "text",
+            text: `${sum}`,
+            size: "xxl",
+            weight: "bold",
+            align: "center",
+            color: "#FFD700",
+            margin: "lg",
+          },
+        ],
+      },
+    },
   };
 }
 
-// ================= WEBHOOK =================
+// ================== FLEX : การ์ดเครดิต ==================
+function flexCredit(name, credit, code) {
+  return {
+    type: "flex",
+    altText: "เครดิต",
+    contents: {
+      type: "bubble",
+      styles: { body: { backgroundColor: "#222" } },
+      body: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          { type: "text", text: name, weight: "bold", color: "#ff3333" },
+          { type: "text", text: `คงเหลือ ${credit.toLocaleString()} บาท`, color: "#00ff66", size: "lg" },
+          { type: "text", text: `ID: ${code}`, size: "sm", color: "#999" },
+        ],
+      },
+    },
+  };
+}
+
+// ================== UTIL ==================
+function isAdmin(userId) {
+  if (ADMINS.size === 0) ADMINS.add(userId);
+  return ADMINS.has(userId);
+}
+
+function getUser(userId) {
+  if (!USERS[userId]) {
+    USERS[userId] = { credit: 0, name: "ไม่ระบุชื่อ" };
+  }
+  return USERS[userId];
+}
+
+// ================== WEBHOOK ==================
 app.post("/webhook", async (req, res) => {
   try {
     const event = req.body.events?.[0];
     if (!event || event.type !== "message") return res.sendStatus(200);
 
     const userId = event.source.userId;
-    const text = event.message.text.trim();
+    const text = event.message.text?.trim();
     const replyToken = event.replyToken;
 
-    // auto admin คนแรก
-    if (ADMINS.size === 0) ADMINS.add(userId);
+    const user = getUser(userId);
 
-    // ================= USERID =================
+    // ===== userid =====
     if (text === "userid") {
-      await reply(replyToken, [
-        { type: "text", text: `🆔 userId:\n${userId}` }
-      ]);
+      await reply(replyToken, [{ type: "text", text: `ID: ${userId}` }]);
       return res.sendStatus(200);
     }
 
-    // ================= CREATE ROOM =================
-    if (text.startsWith("สร้างห้อง ")) {
-      if (!ADMINS.has(userId)) {
-        await reply(replyToken, [{ type: "text", text: "❌ ไม่มีสิทธิ์" }]);
-        return res.sendStatus(200);
-      }
-      const roomId = text.split(" ")[1];
-      ROOMS[roomId] = {
-        owner: userId,
-        open: false,
-        users: {},
-        bets: [],
-        min: 1,
-        max: 999999,
-      };
-      await reply(replyToken, [{ type: "text", text: `✅ สร้างห้อง ${roomId} สำเร็จ` }]);
+    // ===== ตั้งชื่อ =====
+    if (text.startsWith("NM/")) {
+      user.name = text.split("/")[1];
+      await reply(replyToken, [{ type: "text", text: `✅ บันทึกชื่อ ${user.name}` }]);
       return res.sendStatus(200);
     }
 
-    // ================= JOIN ROOM =================
-    if (text.startsWith("เข้าห้อง ")) {
-      const roomId = text.split(" ")[1];
-      if (!ROOMS[roomId]) {
-        await reply(replyToken, [{ type: "text", text: "❌ ไม่พบห้องนี้" }]);
-        return res.sendStatus(200);
-      }
-      USER_ROOM[userId] = roomId;
-      if (!ROOMS[roomId].users[userId]) {
-        ROOMS[roomId].users[userId] = { credit: 0 };
-      }
-      await reply(replyToken, [{ type: "text", text: `📥 เข้าห้อง ${roomId}` }]);
-      return res.sendStatus(200);
-    }
+    // ================= ADMIN =================
+    if (isAdmin(userId)) {
 
-    const roomId = USER_ROOM[userId];
-    if (!roomId || !ROOMS[roomId]) {
-      await reply(replyToken, [{ type: "text", text: "พิมพ์: เข้าห้อง ห้องID" }]);
-      return res.sendStatus(200);
-    }
-
-    const room = ROOMS[roomId];
-
-    // ================= ADMIN COMMAND =================
-    if (ADMINS.has(userId)) {
-
+      // เปิด / ปิด รับเดิมพัน
       if (text === "O") {
-        room.open = true;
-        await reply(replyToken, [flexStatus("เปิดรับเดิมพัน", "OPEN", "#00ff66")]);
+        await reply(replyToken, [{ type: "text", text: "🟢 เปิดรับเดิมพัน" }]);
         return res.sendStatus(200);
       }
-
       if (text === "X") {
-        room.open = false;
-        await reply(replyToken, [flexStatus("ปิดรับเดิมพัน", "CLOSE", "#ff3333")]);
+        await reply(replyToken, [{ type: "text", text: "🔴 ปิดรับเดิมพัน" }]);
         return res.sendStatus(200);
       }
 
+      // ออกผล S123
+      if (text.startsWith("S")) {
+        const nums = text.replace("S", "").split("").map(n => parseInt(n));
+        if (nums.length === 3) {
+          const sum = nums.reduce((a, b) => a + b, 0);
+          CURRENT_RESULT = { nums, sum };
+          HISTORY.unshift(CURRENT_RESULT);
+          await reply(replyToken, [flexDice(nums, sum)]);
+        }
+        return res.sendStatus(200);
+      }
+
+      // BACK
+      if (text === "BACK") {
+        HISTORY.shift();
+        CURRENT_RESULT = HISTORY[0] || null;
+        await reply(replyToken, [{ type: "text", text: "↩️ ย้อนผลแล้ว" }]);
+        return res.sendStatus(200);
+      }
+
+      // RESET / รีรอบ
       if (text === "RESET" || text === "รีรอบ") {
-        room.bets = [];
+        CURRENT_RESULT = null;
         await reply(replyToken, [{ type: "text", text: "♻️ รีรอบเรียบร้อย" }]);
         return res.sendStatus(200);
       }
 
-      if (text.startsWith("S")) {
-        const result = text.substring(1);
-        await reply(replyToken, [flexStatus("ผลออก", result, "#ffaa00")]);
-        room.bets = [];
-        return res.sendStatus(200);
-      }
-
-      if (text.includes("+")) {
-        const [uid, amount] = text.split("+");
-        if (room.users[uid]) {
-          room.users[uid].credit += parseInt(amount);
-          await reply(replyToken, [{ type: "text", text: `➕ เติม ${amount}` }]);
-        }
-        return res.sendStatus(200);
-      }
-
-      if (text.includes("-")) {
-        const [uid, amount] = text.split("-");
-        if (room.users[uid]) {
-          room.users[uid].credit -= parseInt(amount);
-          await reply(replyToken, [{ type: "text", text: `➖ ลบ ${amount}` }]);
+      // เติม / ลบ เครดิต
+      if (/X\d+[+-]\d+/.test(text)) {
+        const [code, amount] = text.split(/([+-])/);
+        const uid = Object.keys(USERS).find(u => u.endsWith(code.replace("X", "")));
+        if (uid) {
+          USERS[uid].credit += parseInt(amount);
+          await reply(replyToken, [{ type: "text", text: "✅ ปรับเครดิตแล้ว" }]);
         }
         return res.sendStatus(200);
       }
     }
 
-    // ================= USER BET =================
-    if (text.includes("/")) {
-      if (!room.open) {
-        await reply(replyToken, [{ type: "text", text: "❌ ยังไม่เปิดรับแทง" }]);
-        return res.sendStatus(200);
-      }
+    // ================= USER =================
 
-      const [face, amount] = text.split("/");
-      const bet = parseInt(amount);
-      const user = room.users[userId];
-
-      if (!user || user.credit < bet) {
-        await reply(replyToken, [{ type: "text", text: "❌ เครดิตไม่พอ" }]);
-        return res.sendStatus(200);
-      }
-
-      user.credit -= bet;
-      room.bets.push({ userId, face, bet });
-
-      await reply(replyToken, [
-        flexStatus("รับโพย", `${face} / ${bet}`, "#00ccff")
-      ]);
+    // แทง 1/999
+    if (/^\d+\/\d+$/.test(text)) {
+      const [face, amt] = text.split("/").map(Number);
+      user.credit -= amt;
+      await reply(replyToken, [{ type: "text", text: `✅ รับโพย ${face}/${amt}` }]);
       return res.sendStatus(200);
     }
 
-    // ================= CREDIT =================
+    // เช็คเครดิต
     if (text === "C") {
-      await reply(replyToken, [
-        { type: "text", text: `💰 เครดิต: ${room.users[userId].credit}` }
-      ]);
+      await reply(replyToken, [flexCredit(user.name, user.credit, userId.slice(-4))]);
       return res.sendStatus(200);
     }
 
-    await reply(replyToken, [{ type: "text", text: "❌ คำสั่งไม่ถูกต้อง" }]);
-    return res.sendStatus(200);
-
+    res.sendStatus(200);
   } catch (e) {
     console.error(e);
-    return res.sendStatus(200);
+    res.sendStatus(200);
   }
 });
 
-// ================= START =================
-app.listen(PORT, () => console.log("Bot running on", PORT));
+app.listen(PORT, () => console.log("BOT RUN", PORT));
