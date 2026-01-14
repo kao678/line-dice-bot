@@ -1,20 +1,20 @@
-// ================== IMPORT ==================
 const express = require("express");
 const axios = require("axios");
-const { handleCommand } = require("./commands");
+
 const app = express();
 app.use(express.json());
 
-// ================== CONFIG ==================
+// ===== CONFIG =====
 const LINE_TOKEN = process.env.LINE_TOKEN;
 const PORT = process.env.PORT || 3000;
 
-// ================== MEMORY DB ==================
-const ROOMS = {};        // ห้องเล่น
-const USER_ROOM = {};   // user อยู่ห้องไหน
-const ADMINS = new Set(); // admin userId
+// ===== MEMORY =====
+const ROOMS = {};
+const USER_ROOM = {};
+const ADMINS = new Set();
+const BLOCKED = new Set();
 
-// ================== LINE REPLY ==================
+// ===== LINE REPLY =====
 async function reply(token, messages) {
   return axios.post(
     "https://api.line.me/v2/bot/message/reply",
@@ -22,33 +22,31 @@ async function reply(token, messages) {
     {
       headers: {
         Authorization: `Bearer ${LINE_TOKEN}`,
-        "Content-Type": "application/json",
-      },
+        "Content-Type": "application/json"
+      }
     }
   );
 }
 
-// ================== FLEX BASIC ==================
-function flexText(title, color, value) {
-  return {
-    type: "flex",
-    altText: title,
-    contents: {
-      type: "bubble",
-      styles: { body: { backgroundColor: "#111111" } },
-      body: {
-        type: "box",
-        layout: "vertical",
-        contents: [
-          { type: "text", text: title, weight: "bold", color: "#ff3333" },
-          { type: "text", text: value, color: color, size: "lg", align: "center" },
-        ],
-      },
-    },
-  };
-}
+// ===== FLEX =====
+const flex = (title, value, color="#00ff99") => ({
+  type: "flex",
+  altText: title,
+  contents: {
+    type: "bubble",
+    styles: { body: { backgroundColor: "#111111" } },
+    body: {
+      type: "box",
+      layout: "vertical",
+      contents: [
+        { type: "text", text: title, weight: "bold", color: "#ffffff" },
+        { type: "text", text: value, size: "xl", color }
+      ]
+    }
+  }
+});
 
-// ================== WEBHOOK ==================
+// ===== WEBHOOK =====
 app.post("/webhook", async (req, res) => {
   try {
     const event = req.body.events?.[0];
@@ -56,105 +54,127 @@ app.post("/webhook", async (req, res) => {
 
     const userId = event.source.userId;
     const text = event.message.text.trim();
-    const replyToken = event.replyToken;
+    const token = event.replyToken;
 
-    // ================== ADMIN AUTO ==================
     if (ADMINS.size === 0) ADMINS.add(userId);
+    if (BLOCKED.has(userId)) {
+      await reply(token,[{type:"text",text:"⛔ คุณถูกบล็อก"}]);
+      return res.sendStatus(200);
+    }
 
-    // ================== USERID ==================
+    // userid
     if (text === "userid") {
-      await reply(replyToken, [{ type: "text", text: `🆔 userId:\n${userId}` }]);
+      await reply(token,[{type:"text",text:`🆔 ${userId}`}]);
       return res.sendStatus(200);
     }
 
-    // ================== CREATE ROOM ==================
+    // สร้างห้อง
     if (text.startsWith("สร้างห้อง ")) {
-      if (!ADMINS.has(userId)) {
-        await reply(replyToken, [{ type: "text", text: "❌ ไม่มีสิทธิ์" }]);
-        return res.sendStatus(200);
-      }
-
+      if (!ADMINS.has(userId)) return res.sendStatus(200);
       const roomId = text.split(" ")[1];
-      ROOMS[roomId] = {
-        owner: userId,
-        open: false,
-        users: {},
-        bets: [],
-      };
-
-      await reply(replyToken, [{ type: "text", text: `✅ สร้างห้อง ${roomId} สำเร็จ` }]);
+      ROOMS[roomId] = { owner:userId, open:false, users:{}, bets:[], last:null };
+      await reply(token,[{type:"text",text:`✅ สร้างห้อง ${roomId}`}]);
       return res.sendStatus(200);
     }
 
-    // ================== JOIN ROOM ==================
+    // เข้าห้อง
     if (text.startsWith("เข้าห้อง ")) {
       const roomId = text.split(" ")[1];
       if (!ROOMS[roomId]) {
-        await reply(replyToken, [{ type: "text", text: "❌ ไม่พบห้องนี้" }]);
+        await reply(token,[{type:"text",text:"❌ ไม่พบห้อง"}]);
         return res.sendStatus(200);
       }
-
       USER_ROOM[userId] = roomId;
-      if (!ROOMS[roomId].users[userId]) {
-        ROOMS[roomId].users[userId] = { credit: 0 };
-      }
-
-      await reply(replyToken, [{ type: "text", text: `🏠 เข้าห้อง ${roomId}` }]);
+      ROOMS[roomId].users[userId] ||= { credit:1000 };
+      await reply(token,[{type:"text",text:`🏠 เข้าห้อง ${roomId}`}]);
       return res.sendStatus(200);
     }
 
     const roomId = USER_ROOM[userId];
     if (!roomId) {
-      await reply(replyToken, [{ type: "text", text: "พิมพ์: เข้าห้อง ห้องID" }]);
+      await reply(token,[{type:"text",text:"พิมพ์: เข้าห้อง ห้องID"}]);
       return res.sendStatus(200);
     }
 
     const room = ROOMS[roomId];
+    const user = room.users[userId];
 
-    // ================== OPEN / CLOSE ==================
+    // เปิด / ปิด
     if (text === "O" && userId === room.owner) {
       room.open = true;
-      await reply(replyToken, [flexText("เปิดรับเดิมพัน", "#00ff00", "OPEN")]);
+      await reply(token,[{type:"text",text:"🟢 เปิดรับเดิมพัน"}]);
       return res.sendStatus(200);
     }
-
     if (text === "X" && userId === room.owner) {
       room.open = false;
-      await reply(replyToken, [flexText("ปิดรับเดิมพัน", "#ff0000", "CLOSE")]);
+      await reply(token,[{type:"text",text:"🔴 ปิดรับเดิมพัน"}]);
       return res.sendStatus(200);
     }
 
-    // ================== CREDIT ==================
-    if (text === "C") {
-      const credit = room.users[userId]?.credit || 0;
-      await reply(replyToken, [flexText("เครดิตคงเหลือ", "#ffff00", `${credit} บาท`)]);
-      return res.sendStatus(200);
-    }
-
-    // ================== BET ==================
-    if (/^\d+\/\d+$/.test(text)) {
+    // แทง
+    if (text.includes("/")) {
       if (!room.open) {
-        await reply(replyToken, [{ type: "text", text: "❌ ปิดรับเดิมพัน" }]);
+        await reply(token,[{type:"text",text:"❌ ยังไม่เปิด"}]);
         return res.sendStatus(200);
       }
-
-      const [face, amount] = text.split("/").map(Number);
+      const [face,amt] = text.split("/");
+      const amount = parseInt(amt);
+      if (user.credit < amount) {
+        await reply(token,[{type:"text",text:"❌ เครดิตไม่พอ"}]);
+        return res.sendStatus(200);
+      }
+      user.credit -= amount;
       room.bets.push({ userId, face, amount });
-
-      await reply(replyToken, [
-        flexText("รับเดิมพัน", "#00ffff", `${face} = ${amount} บาท`),
-      ]);
+      await reply(token,[flex("รับโพย",`${face}/${amount}`)]);
       return res.sendStatus(200);
     }
 
-    // ================== DEFAULT ==================
-    await reply(replyToken, [{ type: "text", text: "❌ คำสั่งไม่ถูกต้อง" }]);
+    // เช็คเครดิต
+    if (text === "C") {
+      await reply(token,[flex("เครดิต",`${user.credit} ฿`,"#ffff00")]);
+      return res.sendStatus(200);
+    }
+
+    // ออกผล
+    if (text.startsWith("S") && userId === room.owner) {
+      const result = text.substring(1);
+      room.last = result;
+      await reply(token,[flex("ผลออก",result,"#ff3333")]);
+      return res.sendStatus(200);
+    }
+
+    // รีรอบ / RESET
+    if ((text==="RESET"||text==="รีรอบ") && userId===room.owner) {
+      room.bets=[];
+      await reply(token,[{type:"text",text:"♻️ รีรอบแล้ว"}]);
+      return res.sendStatus(200);
+    }
+
+    // คืนเงิน
+    if ((text==="REFUND"||text==="รีการแทง") && userId===room.owner) {
+      room.bets.forEach(b=>{
+        room.users[b.userId].credit+=b.amount;
+      });
+      room.bets=[];
+      await reply(token,[{type:"text",text:"💸 คืนเงินแล้ว"}]);
+      return res.sendStatus(200);
+    }
+
+    // BLOCK
+    if (text.startsWith("BLOCK/") && ADMINS.has(userId)) {
+      const id=text.split("/")[1];
+      BLOCKED.add(id);
+      await reply(token,[{type:"text",text:"⛔ บล็อกแล้ว"}]);
+      return res.sendStatus(200);
+    }
+
+    await reply(token,[{type:"text",text:"❓ ไม่เข้าใจคำสั่ง"}]);
     return res.sendStatus(200);
+
   } catch (e) {
     console.error(e);
     return res.sendStatus(200);
   }
 });
 
-// ================== START ==================
-app.listen(PORT, () => console.log("BOT RUNNING"));
+app.listen(PORT,()=>console.log("BOT RUNNING",PORT));
