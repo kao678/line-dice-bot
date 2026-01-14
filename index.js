@@ -134,7 +134,22 @@ app.post("/webhook", async (req, res) => {
 
     const userId = event.source.userId;
     const text = event.message.text.trim();
-    const userCode = userId.slice(-4);
+    // ===== ตั้งชื่อผู้ใช้ =====
+if (text.startsWith("ตั้งชื่อ ")) {
+  const name = text.replace("ตั้งชื่อ ", "").trim();
+  USER_NAME[userId] = name;
+  await reply(event.replyToken, [
+    { type: "text", text: `✅ ตั้งชื่อเป็น ${name} เรียบร้อย` }
+  ]);
+  return res.sendStatus(200);
+}
+    if (text === "userid") {
+  await reply(event.replyToken, [
+    { type: "text", text: `🆔 userId:\n${userId}` }
+  ]);
+  return res.sendStatus(200);
+    }
+    const userCode = USER_NAME[userId] || userId.slice(-4);
 
     /* ---- สร้างห้อง ---- */
     if (text.startsWith("สร้างห้อง ")) {
