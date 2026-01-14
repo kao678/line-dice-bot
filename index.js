@@ -1,7 +1,7 @@
 // ================== IMPORT ==================
 const express = require("express");
 const axios = require("axios");
-
+const { handleCommand } = require("./commands");
 const app = express();
 app.use(express.json());
 
