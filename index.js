@@ -5,40 +5,22 @@ const crypto = require("crypto");
 const app = express();
 app.use(express.json());
 
-/* ================= CONFIG (แก้แค่ตรงนี้) ================= */
+// ================= CONFIG =================
+const CHANNEL_ACCESS_TOKEN = process.env.LINE_TOKEN || "วาง_CHANNEL_ACCESS_TOKEN";
+const CHANNEL_SECRET = process.env.LINE_SECRET || "วาง_CHANNEL_SECRET";
 
-// 👉 Token จาก LINE Developers
-const CHANNEL_ACCESS_TOKEN = "วาง_CHANNEL_ACCESS_TOKEN_ตัวเต็ม";
-const CHANNEL_SECRET = "วาง_CHANNEL_SECRET_ตัวเต็ม";
-
-// 👉 LINE userId แอดมิน (พิมพ์ userid กับบอทเอา)
-const ADMIN_ID = "Uxxxxxxxxxxxxxxxxxxxxxxxx";
-
-// 👉 วันหมดอายุบอท (หมดแล้วบอทหยุดตอบ)
-const LICENSE_EXPIRE = "2026-12-31";
-
-// 👉 โดเมนที่อนุญาต (จาก Render)
+// ===== ระบบขาย / เช่า =====
+const ADMIN_ID = "วาง_USER_ID_แอดมิน";
+const LICENSE_EXPIRE = "2026-12-31"; // YYYY-MM-DD
 const ALLOW_DOMAIN = "line-dice-bot.onrender.com";
 
-/* ========================================================= */
-
+// ================= MEMORY =================
 let OPEN = false;
 let ROUND = 1;
 const USERS = {};
 const HISTORY = [];
 
-/* ================= SECURITY ================= */
-
-function isLicenseValid() {
-  const today = new Date().toISOString().slice(0, 10);
-  return today <= LICENSE_EXPIRE;
-}
-
-function checkDomain(req) {
-  const host = req.headers.host;
-  return host && host.includes(ALLOW_DOMAIN);
-}
-
+// ================= VERIFY =================
 function verify(req) {
   const sig = req.headers["x-line-signature"];
   const body = JSON.stringify(req.body);
@@ -49,8 +31,7 @@ function verify(req) {
   return sig === hash;
 }
 
-/* ================= LINE REPLY ================= */
-
+// ================= REPLY =================
 async function reply(token, messages) {
   await axios.post(
     "https://api.line.me/v2/bot/message/reply",
@@ -64,18 +45,87 @@ async function reply(token, messages) {
   );
 }
 
-/* ================= CHECK STATUS ================= */
+// ================= FLEX =================
+function flexBetSlip(d) {
+  return {
+    type: "flex",
+    altText: "ใบรับโพย",
+    contents: {
+      type: "bubble",
+      body: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          { type: "text", text: "✔️ ใบรับโพย", weight: "bold", size: "lg" },
+          { type: "text", text: `รอบที่ ${d.round}`, color: "#888" },
+          { type: "separator", margin: "md" },
+          { type: "text", text: `โพย: ${d.bet}`, size: "md", margin: "md" },
+          { type: "text", text: `ยอดแทง: ${d.amount}`, color: "#e74c3c" },
+          { type: "text", text: `เครดิตคงเหลือ: ${d.credit}`, color: "#27ae60" },
+        ],
+      },
+    },
+  };
+}
 
+function flexHistory(list) {
+  return {
+    type: "flex",
+    altText: "สถิติย้อนหลัง",
+    contents: {
+      type: "bubble",
+      body: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          { type: "text", text: "📊 สถิติย้อนหลัง 12 รอบ", weight: "bold" },
+          ...list.map(r => ({
+            type: "text",
+            text: `รอบ ${r.round} : ${r.d.join("-")} = ${r.sum}`,
+            size: "sm",
+          })),
+        ],
+      },
+    },
+  };
+}
+
+function flexAdminPanel() {
+  return {
+    type: "flex",
+    altText: "แอดมิน",
+    contents: {
+      type: "bubble",
+      body: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          { type: "text", text: "👑 แผงควบคุมแอดมิน", weight: "bold" },
+          { type: "button", action: { type: "message", label: "🟢 เปิดรับแทง", text: "O" }},
+          { type: "button", action: { type: "message", label: "🔴 ปิดรับแทง", text: "X" }},
+          { type: "button", action: { type: "message", label: "🎲 ออกผล S123", text: "S123" }},
+        ],
+      },
+    },
+  };
+}
+
+// ================= CHECK =================
+function licenseValid() {
+  return new Date() <= new Date(LICENSE_EXPIRE);
+}
+
+// ================= ROUTE =================
 app.get("/", (req, res) => {
+  if (!req.headers.host.includes(ALLOW_DOMAIN))
+    return res.status(403).send("DOMAIN NOT ALLOWED");
   res.send("LINE DICE BOT : RUNNING");
 });
 
-/* ================= WEBHOOK ================= */
-
+// ================= WEBHOOK =================
 app.post("/webhook", async (req, res) => {
-  if (!checkDomain(req)) return res.sendStatus(403);
   if (!verify(req)) return res.sendStatus(403);
-  if (!isLicenseValid()) return res.sendStatus(403);
+  if (!licenseValid()) return res.sendStatus(403);
 
   const event = req.body.events?.[0];
   if (!event || event.type !== "message") return res.sendStatus(200);
@@ -86,43 +136,21 @@ app.post("/webhook", async (req, res) => {
 
   if (!USERS[userId]) USERS[userId] = { credit: 1000 };
 
-  /* ===== ADMIN ONLY ===== */
-  if (userId === ADMIN_ID) {
-    if (text === "O") {
-      OPEN = true;
-      await reply(replyToken, [{ type: "text", text: "🟢 เปิดรับเดิมพัน" }]);
-      return res.sendStatus(200);
-    }
-
-    if (text === "X") {
-      OPEN = false;
-      await reply(replyToken, [{ type: "text", text: "🔴 ปิดรับเดิมพัน" }]);
-      return res.sendStatus(200);
-    }
-
-    if (/^S\d{3}$/.test(text)) {
-      const d = text.replace("S", "").split("").map(Number);
-      const sum = d.reduce((a, b) => a + b, 0);
-
-      HISTORY.unshift({ round: ROUND, d, sum });
-      if (HISTORY.length > 12) HISTORY.pop();
-
-      await reply(replyToken, [
-        { type: "text", text: `🎲 ผลออก ${d.join("-")} = ${sum}` },
-      ]);
-
-      ROUND++;
-      OPEN = false;
-      return res.sendStatus(200);
-    }
+  // ADMIN PANEL
+  if (userId === ADMIN_ID && text === "ADMIN") {
+    await reply(replyToken, [flexAdminPanel()]);
+    return res.sendStatus(200);
   }
 
-  /* ===== USER COMMAND ===== */
+  if (text === "O") {
+    OPEN = true;
+    await reply(replyToken, [{ type: "text", text: "🟢 เปิดรับเดิมพัน" }]);
+    return res.sendStatus(200);
+  }
 
-  if (text === "C") {
-    await reply(replyToken, [
-      { type: "text", text: `💰 เครดิตคงเหลือ ${USERS[userId].credit}` },
-    ]);
+  if (text === "X") {
+    OPEN = false;
+    await reply(replyToken, [{ type: "text", text: "🔴 ปิดรับเดิมพัน" }]);
     return res.sendStatus(200);
   }
 
@@ -132,26 +160,49 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    const [bet, money] = text.split("/").map(Number);
-    if (USERS[userId].credit < money) {
+    const [, amount] = text.split("/").map(Number);
+    if (USERS[userId].credit < amount) {
       await reply(replyToken, [{ type: "text", text: "❌ เครดิตไม่พอ" }]);
       return res.sendStatus(200);
     }
 
-    USERS[userId].credit -= money;
-
+    USERS[userId].credit -= amount;
     await reply(replyToken, [
-      {
-        type: "text",
-        text: `✅ รับโพย\n🎯 แทง ${bet}\n💸 ${money}\n💰 คงเหลือ ${USERS[userId].credit}`,
-      },
+      flexBetSlip({
+        bet: text,
+        amount,
+        credit: USERS[userId].credit,
+        round: ROUND,
+      }),
     ]);
-
     return res.sendStatus(200);
   }
 
-  if (text === "userid") {
-    await reply(replyToken, [{ type: "text", text: userId }]);
+  if (/^S\d{3}$/.test(text)) {
+    const d = text.replace("S", "").split("").map(Number);
+    const sum = d.reduce((a, b) => a + b, 0);
+
+    HISTORY.unshift({ round: ROUND, d, sum });
+    if (HISTORY.length > 12) HISTORY.pop();
+
+    ROUND++;
+    OPEN = false;
+
+    await reply(replyToken, [
+      { type: "text", text: `🎲 ผลออก ${d.join("-")} = ${sum}` },
+    ]);
+    return res.sendStatus(200);
+  }
+
+  if (text === "H") {
+    await reply(replyToken, [flexHistory(HISTORY)]);
+    return res.sendStatus(200);
+  }
+
+  if (text === "C") {
+    await reply(replyToken, [
+      { type: "text", text: `💰 เครดิต ${USERS[userId].credit}` },
+    ]);
     return res.sendStatus(200);
   }
 
@@ -159,7 +210,6 @@ app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 });
 
-/* ================= START ================= */
-
+// ================= START =================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("BOT RUNNING ON", PORT));
