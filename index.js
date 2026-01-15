@@ -6,8 +6,8 @@ const app = express();
 app.use(express.json());
 
 // ================= CONFIG =================
-const CHANNEL_ACCESS_TOKEN = process.env.LINE_TOKEN || "วาง_CHANNEL_ACCESS_TOKEN";
-const CHANNEL_SECRET = process.env.LINE_SECRET || "วาง_CHANNEL_SECRET";
+const CHANNEL_ACCESS_TOKEN = process.env.LINE_TOKEN || "h8DN3tQr0471j6ivcrsJnhXOyhhZpaq6EmYzZB2tCdSKexJGBLo0n0W9Ox6CXMvlA8ZLDk3SZHUEAPLnY77BkBi7Tk8fxH+4hiNb1IfwoZxi5FmWXzTzd80FQ0r+Jd5Sa9zSXobXpxSOpLDBvndg5wdB04t89/1O/w1cDnyilFU=";
+const CHANNEL_SECRET = process.env.LINE_SECRET || "c158c823bb61a75d4ac5deac322c3f85";
 
 // ===== ระบบขาย / เช่า =====
 const ADMIN_ID = "วาง_USER_ID_แอดมิน";
