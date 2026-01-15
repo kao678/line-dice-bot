@@ -10,8 +10,8 @@ const CHANNEL_ACCESS_TOKEN = process.env.LINE_TOKEN || "h8DN3tQr0471j6ivcrsJnhXO
 const CHANNEL_SECRET = process.env.LINE_SECRET || "c158c823bb61a75d4ac5deac322c3f85";
 
 // ===== ระบบขาย / เช่า =====
-const ADMIN_ID = "วาง_USER_ID_แอดมิน";
-const LICENSE_EXPIRE = "2026-12-31"; // YYYY-MM-DD
+const ADMIN_ID = "Uab107367b6017b2b5fede655841f715c";
+const LICENSE_EXPIRE = "2026-12-31"; // 2026-01-31
 const ALLOW_DOMAIN = "line-dice-bot.onrender.com";
 
 // ================= MEMORY =================
