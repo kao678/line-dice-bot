@@ -6,28 +6,31 @@ const app = express();
 app.use(express.json());
 
 // ================= CONFIG =================
-const CHANNEL_ACCESS_TOKEN = process.env.LINE_TOKEN;
-const CHANNEL_SECRET = process.env.LINE_SECRET;
+const CHANNEL_ACCESS_TOKEN = process.env.LINE_TOKEN || "h8DN3tQr0471j6ivcrsJnhXOyhhZpaq6EmYzZB2tCdSKexJGBLo0n0W9Ox6CXMvlA8ZLDk3SZHUEAPLnY77BkBi7Tk8fxH+4hiNb1IfwoZxi5FmWXzTzd80FQ0r+Jd5Sa9zSXobXpxSOpLDBvndg5wdB04t89/1O/w1cDnyilFU=";
+const CHANNEL_SECRET = process.env.LINE_SECRET || "c158c823bb61a75d4ac5deac322c3f85";
 
 // ===== ระบบขาย / เช่า =====
-const ADMIN_ID = process.env.ADMIN_ID; // ใส่ USER ID แอดมิน
-const LICENSE_EXPIRE = "2026-12-31";
+const ADMIN_ID = "วาง_USER_ID_แอดมิน";
+const LICENSE_EXPIRE = "2026-12-31"; // YYYY-MM-DD
+const ALLOW_DOMAIN = "line-dice-bot.onrender.com";
 
 // ================= MEMORY =================
 let OPEN = false;
 let ROUND = 1;
 const USERS = {};
-const BETS = [];
 const HISTORY = [];
 
 // ================= VERIFY =================
 function verify(req) {
   const sig = req.headers["x-line-signature"];
+  if (!sig) return false;
+
   const body = JSON.stringify(req.body);
   const hash = crypto
     .createHmac("sha256", CHANNEL_SECRET)
     .update(body)
     .digest("base64");
+
   return sig === hash;
 }
 
@@ -46,56 +49,43 @@ async function reply(token, messages) {
 }
 
 // ================= FLEX =================
-function flexDiceResult(dice, sum) {
+function flexBetSlip(d) {
   return {
     type: "flex",
-    altText: "ผลลูกเต๋า",
+    altText: "✔️ ใบรับโพย",
     contents: {
       type: "bubble",
       body: {
         type: "box",
         layout: "vertical",
         contents: [
-          { type: "text", text: "🎲 ผลลูกเต๋า", weight: "bold", size: "lg" },
+          { type: "text", text: "✔️ ใบรับโพย", weight: "bold", size: "lg" },
+          { type: "text", text: `รอบที่ ${d.round}`, color: "#888" },
           { type: "separator", margin: "md" },
-          {
-            type: "text",
-            text: dice.join("  "),
-            size: "xxl",
-            align: "center",
-            margin: "lg",
-          },
-          {
-            type: "text",
-            text: `รวม = ${sum}`,
-            size: "xl",
-            align: "center",
-            weight: "bold",
-            color: "#e74c3c",
-          },
+          { type: "text", text: `โพย: ${d.bet}`, margin: "md" },
+          { type: "text", text: `ยอดแทง: ${d.amount}`, color: "#e74c3c" },
+          { type: "text", text: `เครดิตคงเหลือ: ${d.credit}`, color: "#27ae60" },
         ],
       },
     },
   };
 }
 
-function flexSummary(list) {
+function flexHistory(list) {
   return {
     type: "flex",
-    altText: "สรุปยอด",
+    altText: "📊 สถิติย้อนหลัง",
     contents: {
       type: "bubble",
       body: {
         type: "box",
         layout: "vertical",
         contents: [
-          { type: "text", text: "📊 สรุปยอดรอบนี้", weight: "bold", size: "lg" },
-          { type: "separator", margin: "md" },
+          { type: "text", text: "📊 สถิติย้อนหลัง 12 รอบ", weight: "bold" },
           ...list.map(r => ({
             type: "text",
-            text: `${r.user} : ${r.result}`,
+            text: `รอบ ${r.round} : ${r.d.join("-")} = ${r.sum}`,
             size: "sm",
-            color: r.result.startsWith("+") ? "#27ae60" : "#e74c3c",
           })),
         ],
       },
@@ -103,18 +93,57 @@ function flexSummary(list) {
   };
 }
 
-// ================= ROUTE =================
+function flexAdminPanel() {
+  return {
+    type: "flex",
+    altText: "👑 แอดมิน",
+    contents: {
+      type: "bubble",
+      body: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          { type: "text", text: "👑 แผงควบคุมแอดมิน", weight: "bold" },
+          { type: "button", action: { type: "message", label: "🟢 เปิดรับแทง", text: "O" }},
+          { type: "button", action: { type: "message", label: "🔴 ปิดรับแทง", text: "X" }},
+          { type: "button", action: { type: "message", label: "🎲 ออกผล S123", text: "S123" }},
+        ],
+      },
+    },
+  };
+}
+
+// ================= CHECK =================
+function licenseValid() {
+  return new Date() <= new Date(LICENSE_EXPIRE);
+}
+
+// ================= ROOT =================
 app.get("/", (req, res) => {
   res.send("LINE DICE BOT : RUNNING");
 });
 
 // ================= WEBHOOK =================
 app.post("/webhook", async (req, res) => {
-  if (!verify(req)) return res.sendStatus(403);
-  if (new Date() > new Date(LICENSE_EXPIRE)) return res.sendStatus(403);
 
-  const event = req.body.events?.[0];
-  if (!event || event.type !== "message") return res.sendStatus(200);
+  // ✅ สำคัญมาก: ให้ LINE Verify ผ่านก่อน
+  if (!req.body.events) {
+    return res.sendStatus(200);
+  }
+
+  // ตรวจ signature หลังจาก Verify ผ่านแล้ว
+  if (!verify(req)) {
+    return res.sendStatus(200);
+  }
+
+  if (!licenseValid()) {
+    return res.sendStatus(200);
+  }
+
+  const event = req.body.events[0];
+  if (!event || event.type !== "message") {
+    return res.sendStatus(200);
+  }
 
   const text = event.message.text?.trim();
   const userId = event.source.userId;
@@ -122,70 +151,79 @@ app.post("/webhook", async (req, res) => {
 
   if (!USERS[userId]) USERS[userId] = { credit: 1000 };
 
-  // ================= ADMIN =================
-  if (text === "O" && userId === ADMIN_ID) {
+  // ===== ADMIN =====
+  if (userId === ADMIN_ID && text === "ADMIN") {
+    await reply(replyToken, [flexAdminPanel()]);
+    return res.sendStatus(200);
+  }
+
+  // เปิด / ปิด
+  if (text === "O") {
     OPEN = true;
-    BETS.length = 0;
     await reply(replyToken, [{ type: "text", text: "🟢 เปิดรับเดิมพัน" }]);
     return res.sendStatus(200);
   }
 
-  if (text === "X" && userId === ADMIN_ID) {
+  if (text === "X") {
     OPEN = false;
     await reply(replyToken, [{ type: "text", text: "🔴 ปิดรับเดิมพัน" }]);
     return res.sendStatus(200);
   }
 
-  // ================= BET =================
+  // แทง
   if (/^\d+\/\d+$/.test(text)) {
     if (!OPEN) {
       await reply(replyToken, [{ type: "text", text: "❌ ยังไม่เปิดรับแทง" }]);
       return res.sendStatus(200);
     }
 
-    const [bet, amount] = text.split("/").map(Number);
+    const [, amount] = text.split("/").map(Number);
     if (USERS[userId].credit < amount) {
       await reply(replyToken, [{ type: "text", text: "❌ เครดิตไม่พอ" }]);
       return res.sendStatus(200);
     }
 
     USERS[userId].credit -= amount;
-    BETS.push({ user: userId.slice(-4), bet, amount });
 
     await reply(replyToken, [
-      { type: "text", text: `✔️ รับโพย ${text}` },
+      flexBetSlip({
+        bet: text,
+        amount,
+        credit: USERS[userId].credit,
+        round: ROUND,
+      }),
     ]);
     return res.sendStatus(200);
   }
 
-  // ================= RESULT =================
-  if (/^S\d{3}$/.test(text) && userId === ADMIN_ID) {
-    const dice = text.replace("S", "").split("").map(Number);
-    const sum = dice.reduce((a, b) => a + b, 0);
+  // ออกผล
+  if (/^S\d{3}$/.test(text)) {
+    const d = text.replace("S", "").split("").map(Number);
+    const sum = d.reduce((a, b) => a + b, 0);
 
-    const summary = BETS.map(b => ({
-      user: b.user,
-      result: sum === b.bet ? `+${b.amount * 2}` : `-${b.amount}`,
-    }));
-
-    HISTORY.unshift({ round: ROUND, dice, sum });
+    HISTORY.unshift({ round: ROUND, d, sum });
     if (HISTORY.length > 12) HISTORY.pop();
 
     ROUND++;
     OPEN = false;
 
     await reply(replyToken, [
-      flexDiceResult(dice, sum),
-      flexSummary(summary),
+      { type: "text", text: `🎲 ผลออก ${d.join("-")} = ${sum}` },
     ]);
     return res.sendStatus(200);
   }
 
-  // ================= CREDIT =================
+  // เครดิต
   if (text === "C") {
     await reply(replyToken, [
       { type: "text", text: `💰 เครดิต ${USERS[userId].credit}` },
     ]);
+    return res.sendStatus(200);
+  }
+
+  // สถิติ
+  if (text === "H") {
+    await reply(replyToken, [flexHistory(HISTORY)]);
     return res.sendStatus(200);
   }
 
@@ -195,4 +233,6 @@ app.post("/webhook", async (req, res) => {
 
 // ================= START =================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("BOT RUNNING"));
+app.listen(PORT, () => {
+  console.log("BOT RUNNING ON", PORT);
+});
