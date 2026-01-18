@@ -1,163 +1,212 @@
 const express = require("express");
 const axios = require("axios");
 const crypto = require("crypto");
-const fs = require("fs");
-const path = require("path");
 
 const app = express();
 app.use(express.json());
 
-/* ================= CONFIG ================= */
+// ================= CONFIG =================
 const CHANNEL_ACCESS_TOKEN = process.env.LINE_TOKEN;
 const CHANNEL_SECRET = process.env.LINE_SECRET;
-const ADMIN_ID = process.env.ADMIN_ID;
+const ADMIN_ID = process.env.ADMIN_ID || null;
 
-/* ================= DB ================= */
-const DB_PATH = path.join(__dirname, "storage", "db.json");
+// ================= MEMORY =================
+let OPEN = false;
+let ROUND = 1;
+const USERS = {};
+const HISTORY = [];
 
-function loadDB() {
-  return JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
-}
-
-function saveDB(db) {
-  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
-}
-
-/* ================= VERIFY ================= */
+// ================= VERIFY =================
 function verify(req) {
   const sig = req.headers["x-line-signature"];
-  if (!sig) return false;
+  const body = JSON.stringify(req.body);
   const hash = crypto
     .createHmac("sha256", CHANNEL_SECRET)
-    .update(JSON.stringify(req.body))
+    .update(body)
     .digest("base64");
   return sig === hash;
 }
 
-/* ================= REPLY ================= */
+// ================= REPLY =================
 async function reply(token, messages) {
-  await axios.post(
-    "https://api.line.me/v2/bot/message/reply",
-    { replyToken: token, messages },
-    {
-      headers: {
-        Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}`,
-        "Content-Type": "application/json"
+  try {
+    await axios.post(
+      "https://api.line.me/v2/bot/message/reply",
+      { replyToken: token, messages },
+      {
+        headers: {
+          Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 5000,
       }
-    }
-  );
+    );
+  } catch (e) {
+    console.error("REPLY ERROR", e.message);
+  }
 }
 
-/* ================= ROUTE ================= */
+// ================= FLEX =================
+function flexBetSlip(d) {
+  return {
+    type: "flex",
+    altText: "ใบรับโพย",
+    contents: {
+      type: "bubble",
+      body: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          { type: "text", text: "✔️ ใบรับโพย", weight: "bold", size: "lg" },
+          { type: "text", text: `รอบที่ ${d.round}`, color: "#888" },
+          { type: "separator", margin: "md" },
+          { type: "text", text: `โพย: ${d.bet}`, margin: "md" },
+          { type: "text", text: `ยอดแทง: ${d.amount}`, color: "#e74c3c" },
+          { type: "text", text: `เครดิตคงเหลือ: ${d.credit}`, color: "#27ae60" },
+        ],
+      },
+    },
+  };
+}
+
+function flexHistory(list) {
+  return {
+    type: "flex",
+    altText: "สถิติย้อนหลัง",
+    contents: {
+      type: "bubble",
+      body: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          { type: "text", text: "📊 สถิติย้อนหลัง 12 รอบ", weight: "bold" },
+          ...list.map(r => ({
+            type: "text",
+            text: `รอบ ${r.round} : ${r.d.join("-")} = ${r.sum}`,
+            size: "sm",
+          })),
+        ],
+      },
+    },
+  };
+}
+
+function flexAdminPanel() {
+  return {
+    type: "flex",
+    altText: "แผงแอดมิน",
+    contents: {
+      type: "bubble",
+      body: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          { type: "text", text: "👑 แผงควบคุมแอดมิน", weight: "bold" },
+          { type: "button", action: { type: "message", label: "🟢 เปิดรับแทง", text: "O" }},
+          { type: "button", action: { type: "message", label: "🔴 ปิดรับแทง", text: "X" }},
+          { type: "button", action: { type: "message", label: "🎲 ออกผล S456", text: "S456" }},
+        ],
+      },
+    },
+  };
+}
+
+// ================= HEALTH =================
 app.get("/", (req, res) => {
-  res.send("LINE BOT SELL VERSION : RUNNING");
+  res.send("LINE DICE BOT : RUNNING");
 });
 
-/* ================= WEBHOOK ================= */
-app.post("/webhook", async (req, res) => {
-  try {
-    if (!verify(req)) return res.sendStatus(403);
-    if (!req.body.events) return res.sendStatus(200);
+// ================= WEBHOOK =================
+app.post("/webhook", (req, res) => {
+  // ✅ ตอบ LINE ทันที กัน timeout
+  res.status(200).send("OK");
 
-    const event = req.body.events[0];
-    if (!event || event.type !== "message") return res.sendStatus(200);
+  if (!verify(req)) return;
 
-    const replyToken = event.replyToken;
-    const text = event.message.text?.trim();
+  const event = req.body.events?.[0];
+  if (!event || event.type !== "message") return;
 
-    const userId =
-      event.source.userId ||
-      event.source.groupId ||
-      event.source.roomId;
+  const text = event.message.text?.trim();
+  const userId = event.source.userId;
+  const replyToken = event.replyToken;
 
-    const groupId = event.source.groupId || null;
+  if (!USERS[userId]) USERS[userId] = { credit: 1000 };
 
-    let db = loadDB();
-
-    /* ===== ล็อกกลุ่มเดียว (อัตโนมัติ) ===== */
-    if (!db.config.groupId && groupId && userId === ADMIN_ID) {
-      db.config.groupId = groupId;
-      saveDB(db);
+  (async () => {
+    // ADMIN PANEL
+    if ((ADMIN_ID ? userId === ADMIN_ID : true) && text === "ADMIN") {
+      await reply(replyToken, [flexAdminPanel()]);
+      return;
     }
 
-    if (db.config.groupId && groupId !== db.config.groupId) {
-      return res.sendStatus(200); // เงียบถ้าไม่ใช่กลุ่มนี้
-    }
-
-    /* ===== เพิ่มแอดมิน ===== */
-    if (!db.config.admins.includes(ADMIN_ID)) {
-      db.config.admins.push(ADMIN_ID);
-      saveDB(db);
-    }
-
-    /* ===== init สมาชิก ===== */
-    if (!db.members[userId]) {
-      db.members[userId] = {
-        credit: 1000,
-        blocked: false,
-        totalRound: 0
-      };
-      saveDB(db);
-    }
-
-    /* ===== คำสั่งพื้นฐาน ===== */
-
-    // เช็คเครดิต
-    if (text === "C") {
-      await reply(replyToken, [
-        { type: "text", text: `💰 เครดิต ${db.members[userId].credit}` }
-      ]);
-      return res.sendStatus(200);
-    }
-
-    // เปิดรับเดิมพัน
-    if (text === "O" && db.config.admins.includes(userId)) {
-      db.config.open = true;
-      saveDB(db);
+    if (text === "O") {
+      OPEN = true;
       await reply(replyToken, [{ type: "text", text: "🟢 เปิดรับเดิมพัน" }]);
-      return res.sendStatus(200);
+      return;
     }
 
-    // ปิดรับเดิมพัน
-    if (text === "X" && db.config.admins.includes(userId)) {
-      db.config.open = false;
-      saveDB(db);
+    if (text === "X") {
+      OPEN = false;
       await reply(replyToken, [{ type: "text", text: "🔴 ปิดรับเดิมพัน" }]);
-      return res.sendStatus(200);
+      return;
     }
 
-    // แทง 1/100
     if (/^\d+\/\d+$/.test(text)) {
-      if (!db.config.open) {
+      if (!OPEN) {
         await reply(replyToken, [{ type: "text", text: "❌ ยังไม่เปิดรับแทง" }]);
-        return res.sendStatus(200);
+        return;
       }
 
       const [, amount] = text.split("/").map(Number);
-
-      if (db.members[userId].credit < amount) {
+      if (USERS[userId].credit < amount) {
         await reply(replyToken, [{ type: "text", text: "❌ เครดิตไม่พอ" }]);
-        return res.sendStatus(200);
+        return;
       }
 
-      db.members[userId].credit -= amount;
-      db.members[userId].totalRound += 1;
-      saveDB(db);
+      USERS[userId].credit -= amount;
+      await reply(replyToken, [
+        flexBetSlip({
+          bet: text,
+          amount,
+          credit: USERS[userId].credit,
+          round: ROUND,
+        }),
+      ]);
+      return;
+    }
+
+    if (/^S\d{3}$/.test(text)) {
+      const d = text.replace("S", "").split("").map(Number);
+      const sum = d.reduce((a, b) => a + b, 0);
+
+      HISTORY.unshift({ round: ROUND, d, sum });
+      if (HISTORY.length > 12) HISTORY.pop();
+
+      ROUND++;
+      OPEN = false;
 
       await reply(replyToken, [
-        { type: "text", text: `✅ รับโพย ${text}` }
+        { type: "text", text: `🎲 ผลออก ${d.join("-")} = ${sum}` },
       ]);
-      return res.sendStatus(200);
+      return;
+    }
+
+    if (text === "H") {
+      await reply(replyToken, [flexHistory(HISTORY)]);
+      return;
+    }
+
+    if (text === "C") {
+      await reply(replyToken, [
+        { type: "text", text: `💰 เครดิต ${USERS[userId].credit}` },
+      ]);
+      return;
     }
 
     await reply(replyToken, [{ type: "text", text: "❌ คำสั่งไม่ถูกต้อง" }]);
-    res.sendStatus(200);
-  } catch (e) {
-    console.error(e);
-    res.sendStatus(200);
-  }
+  })();
 });
 
-/* ================= START ================= */
+// ================= START =================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("BOT RUNNING (SELL VERSION)"));
+app.listen(PORT, () => console.log("BOT RUNNING ON", PORT));
