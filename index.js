@@ -1,33 +1,18 @@
-const express = require("express");
-const bodyParser = require("body-parser");
-const axios = require("axios");
-
+const express = require('express');
 const app = express();
-app.use(bodyParser.json());
 
-const LINE_TOKEN = process.env.LINE_TOKEN;
+app.use(express.json());
 
-async function reply(replyToken, text) {
-  await axios.post(
-    "https://api.line.me/v2/bot/message/reply",
-    {
-      replyToken,
-      messages: [{ type: "text", text }],
-    },
-    { headers: { Authorization: `Bearer ${LINE_TOKEN}` } }
-  );
-}
+app.get('/', (req, res) => {
+  res.send('LINE BOT OK');
+});
 
-app.post("/webhook", async (req, res) => {
-  const event = req.body.events[0];
-  const msg = event.message.text.trim().toUpperCase();
-
-  if (msg === "O") await reply(event.replyToken, "🟢 เปิดรับเดิมพัน");
-  else if (msg === "X") await reply(event.replyToken, "🔴 ปิดรับเดิมพัน");
-  else if (msg.startsWith("S"))
-    await reply(event.replyToken, "🎯 ผลออก " + msg.replace("S", ""));
-
+app.post('/webhook', (req, res) => {
+  console.log('Webhook received');
   res.sendStatus(200);
 });
 
-app.listen(3000);
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+});
