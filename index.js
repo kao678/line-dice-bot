@@ -1,169 +1,140 @@
+// ===== LINE Dice Bot : Single-file Production =====
 const express = require("express");
-const axios = require("axios");
 const crypto = require("crypto");
+const axios = require("axios");
 
 const app = express();
+app.use(express.json({ limit: "2mb" }));
 
-// เก็บ rawBody สำหรับ verify
-app.use(express.json({
-  verify: (req, res, buf) => {
-    req.rawBody = buf;
-  }
-}));
-
-// ================= CONFIG =================
+// ===== CONFIG (อ่านจาก Environment เท่านั้น) =====
 const CHANNEL_ACCESS_TOKEN = process.env.LINE_TOKEN;
 const CHANNEL_SECRET = process.env.LINE_SECRET;
-const ADMIN_ID = process.env.ADMIN_ID;
+const ADMIN_ID = process.env.ADMIN_ID || "";
 
-// ====== รูปภาพ ======
-const IMG_OPEN  = "https://i.imgur.com/OPEN.png";
-const IMG_CLOSE = "https://i.imgur.com/CLOSE.png";
-const IMG_DICE = {
-  1: "https://i.imgur.com/dice1.png",
-  2: "https://i.imgur.com/dice2.png",
-  3: "https://i.imgur.com/dice3.png",
-  4: "https://i.imgur.com/dice4.png",
-  5: "https://i.imgur.com/dice5.png",
-  6: "https://i.imgur.com/dice6.png"
-};
-
-// ================= MEMORY =================
-let OPEN = false;
+// ===== BASIC STATE (เดโม / ปรับต่อได้) =====
+let BET_OPEN = true;
+let HISTORY = []; // เก็บ 12 รอบล่าสุด [{round, dice:[d1,d2,d3], result}]
 let ROUND = 1;
 
-const USERS = {}; 
-// userId: { name, credit, totalBet }
-
-const HISTORY = []; 
-// { round, d, sum }
-
-// ================= VERIFY =================
-function verify(req) {
-  const sig = req.headers["x-line-signature"];
-  if (!sig) return false;
-  const hash = crypto
-    .createHmac("sha256", CHANNEL_SECRET)
-    .update(req.rawBody)
-    .digest("base64");
-  return sig === hash;
-}
-
-// ================= REPLY =================
-async function reply(replyToken, messages) {
+// ===== UTIL =====
+function reply(token, messages) {
   return axios.post(
     "https://api.line.me/v2/bot/message/reply",
-    {
-      replyToken,
-      messages: Array.isArray(messages) ? messages : [messages],
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      timeout: 5000,
-    }
+    { replyToken: token, messages: Array.isArray(messages) ? messages : [messages] },
+    { headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` } }
   );
 }
 
-// ================= FLEX =================
-
-// วิธีการแทง
-function flexHowToBet() {
-  return {
-    type: "flex",
-    altText: "วิธีการแทงถั่ว KRMOBILE.37",
-    contents: {
-      type: "bubble",
-      styles: { body: { backgroundColor: "#111111" } },
-      body: {
-        type: "box",
-        layout: "vertical",
-        spacing: "md",
-        contents: [
-          { type: "text", text: "🎲 KRMOBILE.37", weight: "bold", size: "xl", color: "#ff3b3b", align: "center" },
-          { type: "text", text: "วิธีการแทงถั่วบางซื่อ", size: "sm", color: "#cccccc", align: "center" },
-          { type: "separator", margin: "md", color: "#333333" },
-          { type: "text", text: "1/100 = แทง 1 ⬜", color: "#ffffff", size: "sm" },
-          { type: "text", text: "2/100 = แทง 2 🟩", color: "#00ff6a", size: "sm" },
-          { type: "text", text: "3/100 = แทง 3 🟨", color: "#f1c40f", size: "sm" },
-          { type: "text", text: "4/100 = แทง 4 🟥", color: "#ff3b3b", size: "sm" },
-          { type: "separator", margin: "md", color: "#333333" },
-          { type: "text", text: "🎯 แทงพิเศษ", weight: "bold", color: "#ffffff" },
-          { type: "text", text: "123/20 = แทงสเปรย์ (จ่าย 25 ต่อ)", size: "sm", color: "#cccccc" },
-          { type: "text", text: "555/20 = แทงเป่า (จ่าย 100 ต่อ)", size: "sm", color: "#cccccc" },
-          { type: "separator", margin: "md", color: "#333333" },
-          { type: "text", text: "🇹🇭 โปร่งใส ซื่อตรง บริการทุกระดับ 🇹🇭", size: "xs", color: "#aaaaaa", align: "center" },
-          { type: "text", text: "💯 ฝาก–ถอนได้ 24 ชม. ไม่จำกัด 💯", size: "xs", color: "#aaaaaa", align: "center" },
-          { type: "text", text: "🕒 เปิดให้บริการ 24 ชั่วโมง 🕕", size: "xs", color: "#aaaaaa", align: "center" }
-        ]
-      }
-    }
-  };
+function ok200(res) {
+  res.status(200).send("OK");
 }
 
-// ใบรับโพย ✔️
-function flexBetSlip(data) {
+// ===== SIGNATURE VERIFY =====
+function verify(req) {
+  const signature = req.headers["x-line-signature"];
+  const body = JSON.stringify(req.body);
+  const hash = crypto
+    .createHmac("sha256", CHANNEL_SECRET)
+    .update(body)
+    .digest("base64");
+  return hash === signature;
+}
+
+// ===== FLEX TEMPLATES =====
+function flexSlip({ name, uid, bet, deduct, balance }) {
   return {
     type: "flex",
     altText: "ใบรับโพย",
     contents: {
       type: "bubble",
-      styles: { body: { backgroundColor: "#111111" } },
+      styles: { body: { backgroundColor: "#1b1b1b" } },
       body: {
         type: "box",
         layout: "vertical",
-        spacing: "md",
+        spacing: "sm",
         contents: [
-          { type: "text", text: "✔️ ใบรับโพย", weight: "bold", size: "xl", color: "#2ecc71", align: "center" },
-          { type: "text", text: `รอบที่ ${data.round}`, size: "sm", color: "#aaaaaa", align: "center" },
+          {
+            type: "box",
+            layout: "horizontal",
+            spacing: "sm",
+            contents: [
+              {
+                type: "image",
+                url: "https://i.imgur.com/4M34hi2.png",
+                size: "sm",
+                aspectMode: "cover",
+                cornerRadius: "50%"
+              },
+              {
+                type: "box",
+                layout: "vertical",
+                contents: [
+                  { type: "text", text: name, color: "#ff3b3b", weight: "bold" },
+                  { type: "text", text: `ID: ${uid}`, size: "xs", color: "#aaaaaa" }
+                ]
+              }
+            ]
+          },
           { type: "separator", margin: "md", color: "#333333" },
-          { type: "text", text: `โพย: ${data.bet}`, size: "md", color: "#ffffff" },
-          { type: "text", text: `ยอดแทง: ${data.amount} บาท`, size: "sm", color: "#ff7675" },
-          { type: "text", text: `เครดิตคงเหลือ: ${data.credit} บาท`, size: "sm", color: "#2ecc71" }
+          { type: "text", text: `${bet}  ✔️`, size: "lg", color: "#ffffff" },
+          { type: "text", text: `หักล่วงหน้า ${deduct}`, size: "sm", color: "#ff7675" },
+          { type: "text", text: `คงเหลือ ${balance}`, size: "sm", color: "#2ecc71" }
         ]
       }
     }
   };
 }
 
-// สถิติย้อนหลัง 12 รอบ (มีรูปลูกเต๋า)
-function flexHistoryDice(list) {
+function diceImg(n) {
+  return `https://i.imgur.com/dice${n}.png`; // เตรียมรูป dice1..dice6
+}
+
+function flexResult(d1, d2, d3) {
   return {
     type: "flex",
-    altText: "สถิติย้อนหลัง 12 รอบ",
+    altText: "ผลออก",
     contents: {
       type: "bubble",
-      styles: { body: { backgroundColor: "#111111" } },
+      body: {
+        type: "box",
+        layout: "horizontal",
+        spacing: "md",
+        contents: [
+          { type: "image", url: diceImg(d1), size: "sm" },
+          { type: "image", url: diceImg(d2), size: "sm" },
+          { type: "image", url: diceImg(d3), size: "sm" }
+        ]
+      }
+    }
+  };
+}
+
+function colorByResult(n) {
+  if (n === 1) return "#ffffff";
+  if (n === 2) return "#2ecc71";
+  if (n === 3) return "#f1c40f";
+  return "#ffffff";
+}
+
+function flexHistory(rows) {
+  return {
+    type: "flex",
+    altText: "สถิติย้อนหลัง",
+    contents: {
+      type: "bubble",
       body: {
         type: "box",
         layout: "vertical",
-        spacing: "md",
         contents: [
-          { type: "text", text: "📊 สถิติย้อนหลัง 12 รอบ", weight: "bold", size: "lg", color: "#ff3b3b", align: "center" },
-          { type: "separator", margin: "md", color: "#333333" },
-          ...list.map(r => ({
+          { type: "text", text: "สถิติย้อนหลัง 12 รอบ", color: "#ff3b3b", weight: "bold", align: "center" },
+          ...rows.map(r => ({
             type: "box",
-            layout: "vertical",
-            margin: "md",
+            layout: "horizontal",
+            spacing: "sm",
             contents: [
-              {
-                type: "box",
-                layout: "horizontal",
-                spacing: "sm",
-                contents: r.d.map(n => ({
-                  type: "image",
-                  url: IMG_DICE[n],
-                  size: "sm"
-                }))
-              },
-              {
-                type: "text",
-                text: `รอบ ${r.round} : ${r.d.join("-")} = ${r.sum}`,
-                size: "xs",
-                color: "#cccccc"
-              }
+              { type: "text", text: r.round.toString(), size: "sm", color: "#aaaaaa", flex: 1 },
+              ...r.dice.map(d => ({ type: "image", url: diceImg(d), size: "xs" })),
+              { type: "text", text: r.result.toString(), align: "center", color: colorByResult(r.result), weight: "bold" }
             ]
           }))
         ]
@@ -172,149 +143,99 @@ function flexHistoryDice(list) {
   };
 }
 
-// แผงแอดมิน
-function flexAdminPanel() {
+function flexAdminStatus() {
   return {
     type: "flex",
-    altText: "แผงควบคุมแอดมิน",
+    altText: "สถานะรอบ",
     contents: {
       type: "bubble",
-      styles: { body: { backgroundColor: "#111111" } },
       body: {
         type: "box",
         layout: "vertical",
-        spacing: "md",
         contents: [
-          { type: "text", text: "👑 แผงควบคุมแอดมิน", weight: "bold", size: "lg", color: "#ff3b3b", align: "center" },
-          { type: "separator", margin: "md", color: "#333333" },
-          { type: "button", style: "primary", color: "#2ecc71", action: { type: "message", label: "🟢 เปิดรับเดิมพัน", text: "O" } },
-          { type: "button", style: "primary", color: "#e74c3c", action: { type: "message", label: "🔴 ปิดรับเดิมพัน", text: "X" } },
-          { type: "button", style: "secondary", action: { type: "message", label: "🎲 ออกผล (S123)", text: "S123" } }
+          { type: "text", text: "แอดมินควบคุมรอบ", weight: "bold" },
+          { type: "text", text: BET_OPEN ? "🟢 เปิดรับเดิมพัน" : "🔴 ปิดรับเดิมพัน" }
         ]
       }
     }
   };
 }
 
-// ================= ROUTE =================
-app.get("/", (req, res) => {
-  res.send("LINE DICE BOT : RUNNING");
-});
-
-// ================= WEBHOOK =================
+// ===== WEBHOOK =====
 app.post("/webhook", async (req, res) => {
+  // ตอบ 200 ทันที แก้ timeout
+  ok200(res);
+
+  if (!verify(req)) return;
+
+  const event = req.body.events?.[0];
+  if (!event || event.type !== "message" || event.message.type !== "text") return;
+
+  const text = event.message.text.trim();
+  const replyToken = event.replyToken;
+  const userId = event.source.userId;
+  const isAdmin = ADMIN_ID && userId === ADMIN_ID;
+
   try {
-    if (!verify(req)) return res.sendStatus(200);
-
-    const event = req.body.events?.[0];
-    if (!event || event.type !== "message") return res.sendStatus(200);
-
-    const text = event.message.text?.trim();
-    const replyToken = event.replyToken;
-    const userId = event.source.userId;
-
-    if (!USERS[userId]) {
-      USERS[userId] = { name: "สมาชิก", credit: 1000, totalBet: 0 };
-    }
-
-    // INFO
-    if (text === "INFO") {
-      await reply(replyToken, flexHowToBet());
-      return res.sendStatus(200);
-    }
-
-    // ADMIN PANEL
-    if (text === "ADMIN" && userId === ADMIN_ID) {
-      await reply(replyToken, flexAdminPanel());
-      return res.sendStatus(200);
-    }
-
-    // OPEN
-    if (text === "O" && userId === ADMIN_ID) {
-      OPEN = true;
-      await reply(replyToken, [
-        { type: "image", originalContentUrl: IMG_OPEN, previewImageUrl: IMG_OPEN },
-        { type: "text", text: "🟢 เปิดรับเดิมพัน\nรอบที่ " + ROUND }
-      ]);
-      return res.sendStatus(200);
-    }
-
-    // CLOSE
-    if (text === "X" && userId === ADMIN_ID) {
-      OPEN = false;
-      await reply(replyToken, [
-        { type: "image", originalContentUrl: IMG_CLOSE, previewImageUrl: IMG_CLOSE },
-        { type: "text", text: "🔴 ปิดรับเดิมพัน" }
-      ]);
-      return res.sendStatus(200);
-    }
-
-    // BET
-    if (/^\d+\/\d+$/.test(text)) {
-      if (!OPEN) {
-        await reply(replyToken, { type: "text", text: "❌ ยังไม่เปิดรับแทง" });
-        return res.sendStatus(200);
+    // ===== ADMIN COMMANDS =====
+    if (isAdmin) {
+      if (text === "O") {
+        BET_OPEN = true;
+        return reply(replyToken, flexAdminStatus());
       }
-      const [, amount] = text.split("/").map(Number);
-      if (USERS[userId].credit < amount) {
-        await reply(replyToken, { type: "text", text: "❌ เครดิตไม่พอ" });
-        return res.sendStatus(200);
+      if (text === "X") {
+        BET_OPEN = false;
+        return reply(replyToken, flexAdminStatus());
       }
-      USERS[userId].credit -= amount;
-      USERS[userId].totalBet += amount;
+      // ออกผล S123 เช่น S661
+      if (/^S\d{3}$/.test(text)) {
+        const d1 = parseInt(text[1]);
+        const d2 = parseInt(text[2]);
+        const d3 = parseInt(text[3]);
+        const sum = d1 + d2 + d3;
+        const result = sum <= 7 ? 1 : sum <= 11 ? 2 : 3;
 
-      await reply(replyToken, flexBetSlip({
-        round: ROUND,
-        bet: text,
-        amount,
-        credit: USERS[userId].credit
-      }));
-      return res.sendStatus(200);
+        HISTORY.unshift({ round: ROUND++, dice: [d1, d2, d3], result });
+        HISTORY = HISTORY.slice(0, 12);
+
+        await reply(replyToken, [
+          flexResult(d1, d2, d3),
+          flexHistory(HISTORY)
+        ]);
+        return;
+      }
     }
 
-    // RESULT
-    if (/^S\d{3}$/.test(text) && userId === ADMIN_ID) {
-      const d = text.replace("S", "").split("").map(Number);
-      const sum = d.reduce((a, b) => a + b, 0);
-
-      HISTORY.unshift({ round: ROUND, d, sum });
-      if (HISTORY.length > 12) HISTORY.pop();
-
-      ROUND++;
-      OPEN = false;
-
-      await reply(replyToken, [
-        { type: "image", originalContentUrl: IMG_DICE[d[0]], previewImageUrl: IMG_DICE[d[0]] },
-        { type: "image", originalContentUrl: IMG_DICE[d[1]], previewImageUrl: IMG_DICE[d[1]] },
-        { type: "image", originalContentUrl: IMG_DICE[d[2]], previewImageUrl: IMG_DICE[d[2]] },
-        { type: "text", text: `🎲 ผลออก ${d.join("-")} = ${sum}` }
-      ]);
-      return res.sendStatus(200);
-    }
-
-    // HISTORY
-    if (text === "H") {
-      await reply(replyToken, flexHistoryDice(HISTORY.slice(0, 12)));
-      return res.sendStatus(200);
-    }
-
-    // CREDIT
+    // ===== USER COMMANDS =====
     if (text === "C") {
-      await reply(replyToken, { type: "text", text: `💰 เครดิต ${USERS[userId].credit}` });
-      return res.sendStatus(200);
+      return reply(replyToken, {
+        type: "text",
+        text: "คงเหลือ 0 (เดโม)"
+      });
     }
 
-    await reply(replyToken, { type: "text", text: "❌ คำสั่งไม่ถูกต้อง" });
-    return res.sendStatus(200);
+    // รับโพย 1/240
+    if (/^\d+\/\d+$/.test(text)) {
+      if (!BET_OPEN) {
+        return reply(replyToken, { type: "text", text: "❌ ปิดรับเดิมพัน" });
+      }
+      return reply(replyToken, flexSlip({
+        name: "สมาชิก",
+        uid: "X0000",
+        bet: text,
+        deduct: 720,
+        balance: 4811
+      }));
+    }
 
   } catch (e) {
-    console.error(e);
-    return res.sendStatus(200);
+    console.error(e.message);
   }
 });
 
-// ================= START =================
+// ===== HEALTH CHECK =====
+app.get("/", (_, res) => res.send("บอทลูกเต๋าไลน์: กำลังทำงาน"));
+
+// ===== START =====
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("BOT RUNNING ON", PORT);
-});
+app.listen(PORT, () => console.log("RUN", PORT));
