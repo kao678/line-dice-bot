@@ -4,7 +4,7 @@ const crypto = require("crypto");
 
 const app = express();
 
-/* สำคัญมาก: เก็บ rawBody ไว้ verify */
+/* เก็บ raw body สำหรับ verify */
 app.use(express.json({
   verify: (req, res, buf) => {
     req.rawBody = buf;
@@ -16,27 +16,36 @@ const CHANNEL_ACCESS_TOKEN = process.env.LINE_TOKEN;
 const CHANNEL_SECRET = process.env.LINE_SECRET;
 const ADMIN_ID = process.env.ADMIN_ID;
 
+// ====== รูปภาพ ======
+const IMG_OPEN  = "https://i.imgur.com/OPEN.png";
+const IMG_CLOSE = "https://i.imgur.com/CLOSE.png";
+const IMG_DICE = {
+  1: "https://i.imgur.com/dice1.png",
+  2: "https://i.imgur.com/dice2.png",
+  3: "https://i.imgur.com/dice3.png",
+  4: "https://i.imgur.com/dice4.png",
+  5: "https://i.imgur.com/dice5.png",
+  6: "https://i.imgur.com/dice6.png"
+};
+
 // ================= MEMORY =================
 let OPEN = false;
 let ROUND = 1;
 
 const USERS = {}; 
-// userId: { name, credit, totalBet, totalPay }
+// userId: { name, credit, totalBet }
 
-const HISTORY = []; 
-// { round, d, sum }
+const HISTORY = [];
 
 // ================= VERIFY =================
 function verify(req) {
-  const signature = req.headers["x-line-signature"];
-  if (!signature) return false;
-
+  const sig = req.headers["x-line-signature"];
+  if (!sig) return false;
   const hash = crypto
     .createHmac("sha256", CHANNEL_SECRET)
     .update(req.rawBody)
     .digest("base64");
-
-  return signature === hash;
+  return sig === hash;
 }
 
 // ================= REPLY =================
@@ -58,10 +67,10 @@ async function reply(replyToken, messages) {
 }
 
 // ================= FLEX =================
-function flexSummary(data) {
+function flexHowToBet() {
   return {
     type: "flex",
-    altText: "สรุปยอดขั้นโปร",
+    altText: "วิธีการแทงถั่ว KRMOBILE.37",
     contents: {
       type: "bubble",
       styles: { body: { backgroundColor: "#111111" } },
@@ -70,102 +79,34 @@ function flexSummary(data) {
         layout: "vertical",
         spacing: "md",
         contents: [
-          {
-            type: "text",
-            text: "🧾 สรุปยอดขั้นโปร",
-            weight: "bold",
-            size: "xl",
-            color: "#ff3b3b",
-            align: "center",
-          },
-          {
-            type: "text",
-            text: data.date,
-            size: "sm",
-            color: "#aaaaaa",
-            align: "center",
-          },
+          { type: "text", text: "🎲 KRMOBILE.37", weight: "bold", size: "xl", color: "#ff3b3b", align: "center" },
+          { type: "text", text: "วิธีการแทงถั่วบางซื่อ", size: "sm", color: "#cccccc", align: "center" },
           { type: "separator", margin: "md", color: "#333333" },
 
-          summaryRow("💰 ยอดแทงรวม", data.totalBet, "#ffffff"),
-          summaryRow("📈 ยอดจ่ายลูกค้า", data.totalPay, "#ff7675"),
-          summaryRow("🏦 กำไรบ้าน", data.profit, "#2ecc71"),
-          summaryRow("🎲 จำนวนรอบ", data.rounds, "#f1c40f"),
-        ],
-      },
-    },
-  };
-}
+          { type: "text", text: "1/100 = แทง 1 ⬜", color: "#ffffff", size: "sm" },
+          { type: "text", text: "2/100 = แทง 2 🟩", color: "#00ff6a", size: "sm" },
+          { type: "text", text: "3/100 = แทง 3 🟨", color: "#f1c40f", size: "sm" },
+          { type: "text", text: "4/100 = แทง 4 🟥", color: "#ff3b3b", size: "sm" },
 
-function summaryRow(label, value, color) {
-  return {
-    type: "box",
-    layout: "horizontal",
-    contents: [
-      { type: "text", text: label, size: "sm", color: "#bbbbbb", flex: 3 },
-      {
-        type: "text",
-        text: value.toLocaleString() + " บาท",
-        size: "sm",
-        weight: "bold",
-        color,
-        align: "end",
-        flex: 2,
-      },
-    ],
-  };
-}
-
-function flexMemberSummary(list) {
-  return {
-    type: "flex",
-    altText: "สรุปยอดแยกตามสมาชิก",
-    contents: {
-      type: "bubble",
-      styles: { body: { backgroundColor: "#111111" } },
-      body: {
-        type: "box",
-        layout: "vertical",
-        spacing: "md",
-        contents: [
-          {
-            type: "text",
-            text: "👥 สรุปยอดแยกตามสมาชิก",
-            weight: "bold",
-            size: "lg",
-            color: "#ff3b3b",
-            align: "center",
-          },
           { type: "separator", margin: "md", color: "#333333" },
-          ...list.map(u => ({
-            type: "box",
-            layout: "vertical",
-            margin: "sm",
-            contents: [
-              {
-                type: "text",
-                text: u.name || "ไม่ระบุชื่อ",
-                size: "sm",
-                color: "#ffffff",
-                weight: "bold",
-              },
-              {
-                type: "text",
-                text: `ยอดแทง: ${u.totalBet.toLocaleString()} บาท`,
-                size: "xs",
-                color: "#f1c40f",
-              },
-            ],
-          })),
-        ],
-      },
-    },
+
+          { type: "text", text: "🎯 แทงพิเศษ", weight: "bold", color: "#ffffff" },
+          { type: "text", text: "123/20 = แทงสเปรย์ (จ่าย 25 ต่อ)", size: "sm", color: "#cccccc" },
+          { type: "text", text: "555/20 = แทงเป่า (จ่าย 100 ต่อ)", size: "sm", color: "#cccccc" },
+
+          { type: "separator", margin: "md", color: "#333333" },
+          { type: "text", text: "🇹🇭 โปร่งใส ซื่อตรง บริการทุกระดับ 🇹🇭", size: "xs", color: "#aaaaaa", align: "center" },
+          { type: "text", text: "💯 ฝาก–ถอนได้ 24 ชม. ไม่จำกัด 💯", size: "xs", color: "#aaaaaa", align: "center" },
+          { type: "text", text: "🕒 เปิดให้บริการ 24 ชั่วโมง 🕕", size: "xs", color: "#aaaaaa", align: "center" },
+        ]
+      }
+    }
   };
 }
 
 // ================= ROUTE =================
 app.get("/", (req, res) => {
-  res.send("LINE BOT RUNNING");
+  res.send("LINE DICE BOT : RUNNING");
 });
 
 // ================= WEBHOOK =================
@@ -181,30 +122,32 @@ app.post("/webhook", async (req, res) => {
     const userId = event.source.userId;
 
     if (!USERS[userId]) {
-      USERS[userId] = {
-        name: "ไม่ระบุชื่อ",
-        credit: 1000,
-        totalBet: 0,
-        totalPay: 0,
-      };
+      USERS[userId] = { name: "สมาชิก", credit: 1000, totalBet: 0 };
     }
 
-    // ===== ทดสอบ =====
-    if (text === "ping") {
-      await reply(replyToken, { type: "text", text: "pong ✅" });
+    // ===== INFO =====
+    if (text === "INFO") {
+      await reply(replyToken, flexHowToBet());
       return res.sendStatus(200);
     }
 
-    // ===== เปิด / ปิด =====
+    // ===== เปิด =====
     if (text === "O" && userId === ADMIN_ID) {
       OPEN = true;
-      await reply(replyToken, { type: "text", text: "🟢 เปิดรับเดิมพัน" });
+      await reply(replyToken, [
+        { type: "image", originalContentUrl: IMG_OPEN, previewImageUrl: IMG_OPEN },
+        { type: "text", text: "🟢 เปิดรับเดิมพัน\nรอบที่ " + ROUND }
+      ]);
       return res.sendStatus(200);
     }
 
+    // ===== ปิด =====
     if (text === "X" && userId === ADMIN_ID) {
       OPEN = false;
-      await reply(replyToken, { type: "text", text: "🔴 ปิดรับเดิมพัน" });
+      await reply(replyToken, [
+        { type: "image", originalContentUrl: IMG_CLOSE, previewImageUrl: IMG_CLOSE },
+        { type: "text", text: "🔴 ปิดรับเดิมพัน" }
+      ]);
       return res.sendStatus(200);
     }
 
@@ -226,7 +169,7 @@ app.post("/webhook", async (req, res) => {
 
       await reply(replyToken, {
         type: "text",
-        text: `✅ รับโพย ${text}\nเครดิตคงเหลือ ${USERS[userId].credit}`,
+        text: `✅ รับโพย ${text}\nเครดิตคงเหลือ ${USERS[userId].credit}`
       });
       return res.sendStatus(200);
     }
@@ -236,58 +179,29 @@ app.post("/webhook", async (req, res) => {
       const d = text.replace("S", "").split("").map(Number);
       const sum = d.reduce((a, b) => a + b, 0);
 
-      HISTORY.unshift({ round: ROUND, d, sum });
-      if (HISTORY.length > 12) HISTORY.pop();
-
       ROUND++;
       OPEN = false;
 
-      await reply(replyToken, {
-        type: "text",
-        text: `🎲 ผลออก ${d.join("-")} = ${sum}`,
-      });
+      await reply(replyToken, [
+        { type: "image", originalContentUrl: IMG_DICE[d[0]], previewImageUrl: IMG_DICE[d[0]] },
+        { type: "image", originalContentUrl: IMG_DICE[d[1]], previewImageUrl: IMG_DICE[d[1]] },
+        { type: "image", originalContentUrl: IMG_DICE[d[2]], previewImageUrl: IMG_DICE[d[2]] },
+        { type: "text", text: `🎲 ผลออก ${d.join("-")} = ${sum}` }
+      ]);
       return res.sendStatus(200);
     }
 
     // ===== เครดิต =====
     if (text === "C") {
-      await reply(replyToken, {
-        type: "text",
-        text: `💰 เครดิต ${USERS[userId].credit}`,
-      });
-      return res.sendStatus(200);
-    }
-
-    // ===== SUMMARY (แอดมิน) =====
-    if (text === "SUMMARY" && userId === ADMIN_ID) {
-      const totalBet = Object.values(USERS).reduce((s, u) => s + u.totalBet, 0);
-      const totalPay = Object.values(USERS).reduce((s, u) => s + u.totalPay, 0);
-
-      await reply(replyToken, flexSummary({
-        date: new Date().toLocaleDateString("th-TH"),
-        totalBet,
-        totalPay,
-        profit: totalBet - totalPay,
-        rounds: ROUND - 1,
-      }));
-      return res.sendStatus(200);
-    }
-
-    // ===== MEMBER (แอดมิน) =====
-    if (text === "MEMBER" && userId === ADMIN_ID) {
-      const list = Object.values(USERS)
-        .filter(u => u.totalBet > 0)
-        .sort((a, b) => b.totalBet - a.totalBet);
-
-      await reply(replyToken, flexMemberSummary(list));
+      await reply(replyToken, { type: "text", text: `💰 เครดิต ${USERS[userId].credit}` });
       return res.sendStatus(200);
     }
 
     await reply(replyToken, { type: "text", text: "❌ คำสั่งไม่ถูกต้อง" });
     return res.sendStatus(200);
 
-  } catch (err) {
-    console.error("WEBHOOK ERROR:", err.message);
+  } catch (e) {
+    console.error(e);
     return res.sendStatus(200);
   }
 });
