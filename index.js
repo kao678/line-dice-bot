@@ -1,213 +1,272 @@
-// =======================================================
-// LINE OPEN HOUSE DICE BOT (PRODUCTION CORE – SINGLE FILE)
-// เครดิตจริง / OWNER เช่า / FLEX / พร้อมต่อ DB + BANK API
-// =======================================================
-
 const express = require("express");
 const crypto = require("crypto");
 const axios = require("axios");
 
-const app = express();
-
-// ===== RAW BODY (LINE VERIFY) =====
-app.use(express.json({
-  verify: (req, res, buf) => { req.rawBody = buf.toString(); },
-  limit: "2mb"
-}));
-
-// ===== ENV =====
+// ===== CONFIG / ENV CHECK =====
 const LINE_TOKEN  = process.env.LINE_TOKEN;
 const LINE_SECRET = process.env.LINE_SECRET;
-const ADMIN_ID    = process.env.ADMIN_ID; // userId แอดมินหลัก
+const ADMIN_ID    = process.env.ADMIN_ID;
+const PORT = process.env.PORT || 3000;
 
-// ===== STATE (PRODUCTION CORE) =====
-let BET_OPEN = false;
-let ROUND = 1;
-
-// OWNER = ลูกค้าเช่า (เพิ่ม/ลบได้จากแชท)
-let OWNERS = new Set();
-
-// ===== DATABASE (IN-MEMORY -> เปลี่ยนเป็น Mongo/MySQL ได้) =====
-const DB = {
-  users: {},     // userId -> { credit }
-  bets: [],      // เดิมพันรอบปัจจุบัน
-  history: []    // 12 รอบล่าสุด
-};
-
-// ===== BANK API ADAPTER (เสียบของจริงตรงนี้) =====
-const BankAPI = {
-  async depositSlip(imageUrl) {
-    // TODO: ต่อ API ธนาคารจริง
-    return { success: true, amount: 1000 };
-  },
-  async withdraw(account, amount) {
-    // TODO: ต่อ API ธนาคารจริง
-    return { success: true, ref: "BANK_REF_123" };
-  }
-};
-
-// ===== UTIL =====
-const reply = (replyToken, messages) => axios.post(
-  "https://api.line.me/v2/bot/message/reply",
-  { replyToken, messages: Array.isArray(messages)?messages:[messages] },
-  { headers:{ Authorization:`Bearer ${LINE_TOKEN}` } }
-);
-
-const ok = res => res.status(200).send("OK");
-
-const verify = req => {
-  const sig = req.headers["x-line-signature"];
-  const hash = crypto.createHmac("sha256", LINE_SECRET)
-    .update(req.rawBody).digest("base64");
-  return sig === hash;
-};
-
-const diceImg = n =>
-  `https://scdn.line-apps.com/n/channel_devcenter/img/dice/dice_${n}.png`;
-
-// ===== FLEX =====
-const flexMenu = (role) => ({
-  type:"flex", altText:"เมนู",
-  contents:{ type:"bubble", body:{ type:"box", layout:"vertical", spacing:"sm", contents:[
-    { type:"text", text:"OPEN HOUSE", align:"center", weight:"bold", color:"#ff2d2d" },
-    { type:"text", text: BET_OPEN?"🟢 เปิดรับเดิมพัน":"🔴 ปิดรับเดิมพัน",
-      align:"center", weight:"bold", color:BET_OPEN?"#2ecc71":"#ff2d2d" },
-    { type:"text", text:`รอบที่ ${ROUND}`, align:"center", size:"sm", color:"#aaa" },
-    { type:"separator" },
-    { type:"text", text:"🎲 วิธีแทง", weight:"bold" },
-    { type:"text", text:"1/100 2/100 3/100 4/100" , size:"sm"},
-    { type:"text", text:"123/20 (สเปรย์) | 555/20 (เป่า)", size:"sm" },
-    { type:"text", text:"C ดูเครดิต | X, DL ยกเลิก", size:"sm" },
-    ...(role!=="USER" ? [
-      { type:"separator" },
-      { type:"text", text:"🔐 ผู้ดูแล", weight:"bold" },
-      { type:"text", text:"O / X เปิด–ปิดรอบ", size:"sm" },
-      { type:"text", text:"S661 ออกผล | RESET | BACK", size:"sm" }
-    ]:[])
-  ]}}
-);
-
-const flexSlip = ({name, uid, bet, deduct, balance}) => ({
-  type:"flex", altText:"ใบรับโพย",
-  contents:{ type:"bubble", styles:{body:{backgroundColor:"#1b1b1b"}}, body:{
-    type:"box", layout:"vertical", spacing:"sm", contents:[
-      { type:"text", text:name, color:"#ff3b3b", weight:"bold" },
-      { type:"text", text:`ID: ${uid}`, size:"xs", color:"#aaa" },
-      { type:"separator" },
-      { type:"text", text:`แทง ${bet}`, size:"md", color:"#fff" },
-      { type:"text", text:`หัก ${deduct}`, size:"sm", color:"#ff7675" },
-      { type:"text", text:`คงเหลือ ${balance}`, size:"sm", color:"#2ecc71" }
-    ]
-  }}
-);
-
-const flexResult = (dice) => ({
-  type:"flex", altText:"ผลออก",
-  contents:{ type:"bubble", body:{ type:"box", layout:"vertical", contents:[
-    { type:"text", text:"🎲 RESULT", align:"center", weight:"bold", color:"#ff2d2d" },
-    { type:"box", layout:"horizontal", align:"center", spacing:"md",
-      contents: dice.map(d=>({type:"image", url:diceImg(d), size:"sm"})) }
-  ]}}
-);
-
-// ===== BET PARSER =====
-function parseBet(text){
-  let m = text.match(/^([1-4])\/(\d+)$/);
-  if(m) return { type:"FACE", face:+m[1], amt:+m[2] };
-
-  m = text.match(/^(\d{3})\/(\d+)$/);
-  if(m){
-    if(m[1]==="123") return { type:"SPRAY", amt:+m[2] };
-    if(m[1]==="555") return { type:"BLOW", amt:+m[2] };
-  }
-  return null;
+if(!LINE_TOKEN || !LINE_SECRET || !ADMIN_ID){
+  console.error("Missing required env vars. Please set LINE_TOKEN, LINE_SECRET, ADMIN_ID");
+  process.exit(1);
 }
 
-// ===== WEBHOOK =====
-app.post("/webhook", async (req,res)=>{
-  ok(res);
-  if(!verify(req)) return;
+const app = express();
 
-  const ev = req.body.events?.[0];
-  if(!ev || ev.type!=="message" || ev.message.type!=="text") return;
+// ===== HELPERS =====
+// reply (uses reply API if replyToken present, otherwise push)
+const reply = async (replyToken, to, messages) => {
+  const payload = {
+    messages: Array.isArray(messages) ? messages : [messages]
+  };
 
-  const text = ev.message.text.trim().toUpperCase();
-  const uid = ev.source.userId;
-  const replyToken = ev.replyToken;
+  const headers = {
+    Authorization: `Bearer ${LINE_TOKEN}`,
+    "Content-Type": "application/json"
+  };
 
-  if (text === "MYID") {
-  return reply(replyToken, {
-    type: "text",
-    text: `UID ของคุณคือ\n${uid}`
-  });
+  try {
+    if (replyToken) {
+      // reply
+      await axios.post("https://api.line.me/v2/bot/message/reply", {
+        replyToken,
+        ...payload
+      }, { headers });
+      return;
+    }
+    // fallback: push
+    if (!to) throw new Error("No replyToken and no user id to push");
+    await axios.post("https://api.line.me/v2/bot/message/push", {
+      to,
+      ...payload
+    }, { headers });
+  } catch (err) {
+    console.error("LINE API error:", err.response?.data || err.message);
+    throw err;
   }
-  const isAdmin = uid===ADMIN_ID;
-  const isOwner = isAdmin || OWNERS.has(uid);
-  const role = isAdmin?"ADMIN":(isOwner?"OWNER":"USER");
+};
 
-  DB.users[uid] ??= { credit: 0 };
+// timing-safe signature verification
+const verifySignature = (rawBodyBuffer, signature) => {
+  if (!signature) return false;
+  const hash = crypto.createHmac("sha256", LINE_SECRET)
+    .update(rawBodyBuffer).digest("base64");
 
-  try{
-    // ===== OWNER MGMT =====
-    if(isAdmin && text.startsWith("OWNER+")){
-      OWNERS.add(text.split("+")[1]);
-      return reply(replyToken,{type:"text",text:"เพิ่ม OWNER แล้ว"});
-    }
-    if(isAdmin && text.startsWith("OWNER-")){
-      OWNERS.delete(text.split("-")[1]);
-      return reply(replyToken,{type:"text",text:"ลบ OWNER แล้ว"});
-    }
+  // use timingSafeEqual
+  const a = Buffer.from(hash);
+  const b = Buffer.from(signature);
+  if (a.length !== b.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(a, b);
+};
 
-    if(text==="MENU") return reply(replyToken, flexMenu(role));
+// ===== STATE =====
+let BET_OPEN = false;
+let ROUND = 1;
+const CREDIT = {};   // { uid: number }
+const PENDING = {};  // { uid: { bet, amount } }
 
-    // ===== ADMIN / OWNER =====
-    if(isOwner){
-      if(text==="O"){ BET_OPEN=true; return reply(replyToken, flexMenu(role)); }
-      if(text==="X"){ BET_OPEN=false; return reply(replyToken, flexMenu(role)); }
-      if(text==="RESET"){ ROUND++; BET_OPEN=false; DB.bets=[]; return reply(replyToken,{type:"text",text:`รีรอบ #${ROUND}`}); }
-      if(text==="BACK"){ DB.bets.pop(); return reply(replyToken,{type:"text",text:"ย้อนโพยล่าสุด"}); }
-      if(/^S\d{3}$/.test(text)){
-        const d=[+text[1],+text[2],+text[3]];
-        BET_OPEN=false;
-        DB.history.unshift({ round:ROUND, dice:d });
-        DB.history=DB.history.slice(0,12);
-        return reply(replyToken, flexResult(d));
+// ===== FLEX / UI HELPERS (unchanged logic, but keep simple) =====
+const btn = (label,data)=>({
+  type:"button", style:"secondary", height:"sm",
+  action:{ type:"postback", label, data }
+});
+
+const flexMenu = (isAdmin)=>({
+  type:"flex", altText:"เมนู",
+  contents:{ type:"bubble", body:{
+    type:"box", layout:"vertical", spacing:"md", contents:[
+      { type:"text", text:"🎲 OPEN HOUSE", align:"center", weight:"bold", color:"#ff2d2d" },
+      { type:"text", text: BET_OPEN?"🟢 เปิดรับเดิมพัน":"🔴 ปิดรับเดิมพัน",
+        align:"center", color:BET_OPEN?"#2ecc71":"#ff2d2d" },
+      { type:"text", text:`รอบที่ ${ROUND}`, size:"sm", align:"center", color:"#aaa" },
+      { type:"separator" },
+
+      { type:"text", text:"🎯 เลือกแทง", weight:"bold" },
+      { type:"box", layout:"horizontal", spacing:"sm",
+        contents:[ btn("1","BET:1"), btn("2","BET:2"), btn("3","BET:3"), btn("4","BET:4") ] },
+      { type:"box", layout:"horizontal", spacing:"sm",
+        contents:[ btn("123 (สเปรย์)","BET:123"), btn("555 (เป่า)","BET:555") ] },
+
+      { type:"separator" },
+      { type:"box", layout:"horizontal", spacing:"sm",
+        contents:[ btn("💰 เครดิต","C"), btn("🆔 MY ID","MYID") ] },
+
+      ...(isAdmin?[
+        { type:"separator" },
+        { type:"box", layout:"horizontal", spacing:"sm",
+          contents:[ btn("🟢 เปิดรอบ","O"), btn("🔴 ปิดรอบ","X") ] }
+      ]:[])
+    ]
+  }}
+});
+
+const flexAmount = (bet)=>({
+  type:"flex", altText:"เลือกจำนวน",
+  contents:{ type:"bubble", body:{
+    type:"box", layout:"vertical", spacing:"md", contents:[
+      { type:"text", text:`เลือกจำนวนเงิน (${bet})`, weight:"bold" },
+      { type:"box", layout:"horizontal", spacing:"sm",
+        contents:[ btn("100","AMT:100"), btn("200","AMT:200"), btn("500","AMT:500") ] },
+      { type:"button", style:"secondary", action:{ type:"postback", label:"ยกเลิก", data:"CANCEL" } }
+    ]
+  }}
+});
+
+const flexConfirm = (bet, amount)=>({
+  type:"flex", altText:"ยืนยันโพย",
+  contents:{ type:"bubble", body:{
+    type:"box", layout:"vertical", spacing:"md", contents:[
+      { type:"text", text:"ยืนยันโพย", weight:"bold", color:"#ff2d2d" },
+      { type:"text", text:`แทง: ${bet}` },
+      { type:"text", text:`จำนวน: ${amount}` },
+      { type:"box", layout:"horizontal", spacing:"sm",
+        contents:[ btn("✅ ยืนยัน","CONFIRM"), btn("❌ ยกเลิก","CANCEL") ] }
+    ]
+  }}
+});
+
+// ===== MIDDLEWARE =====
+// For other routes, use normal JSON parser
+app.use(express.json({ limit: "2mb" }));
+
+// For webhook we need raw buffer to verify signature exactly as received.
+// We mount a raw parser only for /webhook
+const rawBodyParser = express.raw({ type: "application/json", limit: "2mb" });
+
+// ===== WEBHOOK =====
+app.post("/webhook", rawBodyParser, async (req, res) => {
+  // verify signature first
+  const signature = req.headers["x-line-signature"];
+  const rawBody = req.body; // Buffer from express.raw
+
+  if (!verifySignature(rawBody, signature)) {
+    console.warn("Invalid signature - rejecting request");
+    return res.status(401).send("Invalid signature");
+  }
+
+  let body;
+  try {
+    body = JSON.parse(rawBody.toString("utf8"));
+  } catch (err) {
+    console.error("Invalid JSON body", err);
+    return res.status(400).send("Invalid JSON");
+  }
+
+  // respond early with 200 so LINE doesn't retry while we process.
+  // Still continue processing asynchronously (but keep awaited to log errors).
+  res.status(200).send("OK");
+
+  const events = Array.isArray(body.events) ? body.events : [];
+
+  for (const ev of events) {
+    // handle each event safely
+    (async () => {
+      try {
+        const eventType = ev.type;
+        let text = "";
+        if (eventType === "postback") {
+          // postback.data is a string we set in action.data
+          text = String(ev.postback?.data || "").trim();
+        } else if (eventType === "message" && ev.message?.type === "text") {
+          text = String(ev.message.text || "").trim().toUpperCase();
+        } else {
+          // ignore other event types for now
+          return;
+        }
+
+        const uid = ev.source?.userId || null;
+        const replyToken = ev.replyToken || null;
+        const isAdmin = uid && uid === ADMIN_ID;
+
+        if (!uid) {
+          console.warn("No userId in event source - skipping");
+        }
+
+        // ensure initial credit
+        if (uid) CREDIT[uid] ??= 10000;
+
+        // BASIC
+        if (text === "MENU") {
+          return await reply(replyToken, uid, flexMenu(isAdmin));
+        }
+        if (text === "C") {
+          return await reply(replyToken, uid, { type: "text", text: `เครดิตคงเหลือ ${CREDIT[uid]}` });
+        }
+        if (text === "MYID") {
+          return await reply(replyToken, uid, { type: "text", text: `USER ID:\n${uid}` });
+        }
+
+        // ADMIN
+        if (isAdmin) {
+          if (text === "O") {
+            BET_OPEN = true;
+            return await reply(replyToken, uid, flexMenu(true));
+          }
+          if (text === "X") {
+            BET_OPEN = false;
+            return await reply(replyToken, uid, flexMenu(true));
+          }
+        }
+
+        // BET FLOW
+        if (text.startsWith("BET:")) {
+          if (!BET_OPEN) return await reply(replyToken, uid, { type: "text", text: "❌ ปิดรับเดิมพัน" });
+          const bet = text.split(":")[1] || "";
+          PENDING[uid] = { bet };
+          return await reply(replyToken, uid, flexAmount(bet));
+        }
+
+        if (text.startsWith("AMT:")) {
+          if (!PENDING[uid]) return;
+          const amount = Number(text.split(":")[1]) || 0;
+          if (amount <= 0) return await reply(replyToken, uid, { type: "text", text: "จำนวนไม่ถูกต้อง" });
+          PENDING[uid].amount = amount;
+          return await reply(replyToken, uid, flexConfirm(PENDING[uid].bet, amount));
+        }
+
+        if (text === "CONFIRM") {
+          const p = PENDING[uid];
+          if (!p) return;
+          if (CREDIT[uid] < p.amount) {
+            delete PENDING[uid];
+            return await reply(replyToken, uid, { type: "text", text: "เครดิตไม่พอ" });
+          }
+          CREDIT[uid] -= p.amount;
+          delete PENDING[uid];
+          return await reply(replyToken, uid, {
+            type: "text",
+            text: `รับโพยเรียบร้อย\nหัก ${p.amount}\nคงเหลือ ${CREDIT[uid]}`
+          });
+        }
+
+        if (text === "CANCEL") {
+          delete PENDING[uid];
+          return await reply(replyToken, uid, { type: "text", text: "ยกเลิกแล้ว" });
+        }
+
+      } catch (err) {
+        console.error("Error processing event:", err);
+        // try to notify user (best-effort)
+        try {
+          const uid = ev.source?.userId || null;
+          const replyToken = ev.replyToken || null;
+          if (uid || replyToken) {
+            await reply(replyToken, uid, { type: "text", text: "เกิดข้อผิดพลาดภายในระบบ" });
+          }
+        } catch (e) {
+          console.error("Failed to send error message to user", e);
+        }
       }
-    }
-
-    // ===== USER =====
-    if(text==="C"){
-      return reply(replyToken,{type:"text",text:`เครดิตคงเหลือ ${DB.users[uid].credit}`});
-    }
-
-    if(text==="X" || text==="DL"){
-      DB.bets = DB.bets.filter(b=>b.uid!==uid);
-      return reply(replyToken,{type:"text",text:"ยกเลิกโพยแล้ว"});
-    }
-
-    if(!BET_OPEN) return reply(replyToken,{type:"text",text:"❌ ปิดรับเดิมพัน"});
-
-    const bet = parseBet(text);
-    if(bet){
-      if(DB.users[uid].credit < bet.amt)
-        return reply(replyToken,{type:"text",text:"เครดิตไม่พอ"});
-      DB.users[uid].credit -= bet.amt;
-      DB.bets.push({ uid, bet });
-      return reply(replyToken, flexSlip({
-        name:"สมาชิก",
-        uid: uid.slice(-4),
-        bet:text,
-        deduct: bet.amt,
-        balance: DB.users[uid].credit
-      }));
-    }
-
-  }catch(e){ console.error(e); }
+    })();
+  } // end for events
 });
 
 // ===== HEALTH =====
-app.get("/",(_,res)=>res.send("OPEN HOUSE DICE BOT : RUNNING"));
+app.get("/", (_, res) => res.send("OPEN HOUSE BOT RUNNING"));
 
 // ===== START =====
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, ()=>console.log("RUN",PORT));
+app.listen(PORT, () => console.log("RUN", PORT));
