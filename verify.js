@@ -8,5 +8,12 @@ module.exports = (body, signature, secret) => {
     .update(body)
     .digest("base64");
 
-  return hash === signature;
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(hash),
+      Buffer.from(signature)
+    );
+  } catch {
+    return false;
+  }
 };
