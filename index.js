@@ -135,6 +135,12 @@ app.post("/webhook", async (req,res)=>{
   const uid = ev.source.userId;
   const replyToken = ev.replyToken;
 
+  if (text === "MYID") {
+  return reply(replyToken, {
+    type: "text",
+    text: `UID ของคุณคือ\n${uid}`
+  });
+  }
   const isAdmin = uid===ADMIN_ID;
   const isOwner = isAdmin || OWNERS.has(uid);
   const role = isAdmin?"ADMIN":(isOwner?"OWNER":"USER");
