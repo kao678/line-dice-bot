@@ -45,30 +45,7 @@ const verify = req => {
 
 // LINE dice image
 const diceImg = n => `https://scdn.line-apps.com/n/channel_devcenter/img/dice/dice_${n}.png`;
-async function getBalance(db, userId) {
-  const r = await db.query(
-    "SELECT balance FROM users WHERE id=$1",
-    [userId]
-  );
-  return r.rows[0]?.balance || 0;
-}
 
-async function addBalance(db, userId, amount, type, ref="") {
-  await db.query("BEGIN");
-  await db.query(
-    "INSERT INTO users(id,balance) VALUES($1,$2) ON CONFLICT(id) DO NOTHING",
-    [userId, 0]
-  );
-  await db.query(
-    "UPDATE users SET balance = balance + $1 WHERE id=$2",
-    [amount, userId]
-  );
-  await db.query(
-    "INSERT INTO transactions(user_id,type,amount,ref) VALUES($1,$2,$3,$4)",
-    [userId, type, amount, ref]
-  );
-  await db.query("COMMIT");
-}
 // ===== FLEX (เมนู/สถานะ) =====
 const flexMenu = (role) => ({
   type:"flex", altText:"เมนู",
@@ -125,89 +102,6 @@ const flexSummary = (rows) => ({
     ...rows.map(r=>({ type:"text", text:r, size:"sm" }))
   ]}}
 });
-function flexSlipSmall({ name, uid, bet, deduct, balance }) {
-  return {
-    type: "flex",
-    altText: "ใบรับโพย",
-    contents: {
-      type: "bubble",
-      styles: { body: { backgroundColor: "#111111" } },
-      body: {
-        type: "box",
-        layout: "vertical",
-        paddingAll: "8px",
-        spacing: "xs",
-        contents: [
-          {
-            type: "text",
-            text: `${name} (${uid})`,
-            size: "xs",
-            color: "#ff3b3b",
-            weight: "bold"
-          },
-          {
-            type: "box",
-            layout: "horizontal",
-            contents: [
-              { type: "text", text: bet, size: "sm", flex: 2 },
-              { type: "text", text: `-${deduct}`, size: "sm", color: "#ff7675", align: "end" }
-            ]
-          },
-          {
-            type: "text",
-            text: `คงเหลือ ${balance}`,
-            size: "xs",
-            color: "#2ecc71",
-            align: "end"
-          }
-        ]
-      }
-    }
-  };
-}
-function flexResultSmall(d1, d2, d3) {
-  return {
-    type: "flex",
-    altText: "ผลออก",
-    contents: {
-      type: "bubble",
-      body: {
-        type: "box",
-        layout: "horizontal",
-        spacing: "sm",
-        paddingAll: "6px",
-        contents: [
-          { type: "image", url: diceImg(d1), size: "xs" },
-          { type: "image", url: diceImg(d2), size: "xs" },
-          { type: "image", url: diceImg(d3), size: "xs" }
-        ]
-      }
-    }
-  };
-}
-function flexSummarySmall(rows) {
-  return {
-    type: "flex",
-    altText: "สรุปเดิมพัน",
-    contents: {
-      type: "bubble",
-      body: {
-        type: "box",
-        layout: "vertical",
-        paddingAll: "8px",
-        contents: [
-          { type: "text", text: "สรุปเดิมพัน", size: "sm", weight: "bold", color: "#ff3b3b" },
-          ...rows.map(r => ({
-            type: "text",
-            text: r,
-            size: "xs",
-            color: r.includes("-") ? "#ff7675" : "#2ecc71"
-          }))
-        ]
-      }
-    }
-  };
-}
 
 // ===== PARSE BET =====
 function parseBet(text){
